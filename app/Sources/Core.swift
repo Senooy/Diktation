@@ -207,7 +207,14 @@ final class CoreModel: ObservableObject {
             refresh()
         case "pill":
             if let p = try? JSONDecoder().decode(PillState.self, from: data) {
-                pill = p
+                // 30 événements par seconde pendant l'écoute : publier chacun
+                // redessinerait toute la fenêtre. Seul l'essai de l'accueil
+                // affiche les niveaux en direct ; ailleurs, on ne publie que
+                // les changements de mode.
+                if !isOnboarded || p.visible != pill.visible || p.mode != pill.mode || p.hands_free != pill.hands_free
+                    || p.command != pill.command || p.message != pill.message || p.bundle_id != pill.bundle_id {
+                    pill = p
+                }
                 PillPanel.shared.update(p)
             }
         default:

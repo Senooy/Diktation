@@ -337,20 +337,25 @@ struct NoticeBox: View {
 struct ProgressRing: View {
     let progress: Double
     var indeterminate = false
-    @State private var spin = false
     var body: some View {
         ZStack {
             Circle().stroke(Ink.hairline, lineWidth: 2)
-            Circle()
-                .trim(from: 0, to: indeterminate ? 0.3 : max(0.02, progress))
-                .stroke(Ink.primary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .rotationEffect(.degrees(-90 + (indeterminate && spin ? 360 : 0)))
+            if indeterminate {
+                Oscillator(period: 1) { phase in
+                    Circle()
+                        .trim(from: 0, to: 0.3)
+                        .stroke(Ink.primary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90 + 360 * phase))
+                }
+            } else {
+                Circle()
+                    .trim(from: 0, to: max(0.02, progress))
+                    .stroke(Ink.primary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
         }
         .frame(width: 12, height: 12)
         .animation(.linear(duration: 0.3), value: progress)
-        .onAppear {
-            if indeterminate { withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) { spin = true } }
-        }
     }
 }
 
@@ -954,18 +959,15 @@ struct BigChord: View {
 
 /// Point indigo qui pulse pendant l'enregistrement d'un raccourci.
 struct RecordingLabel: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var on = false
     var body: some View {
         HStack(spacing: 8) {
-            Circle().fill(Ink.indigo).frame(width: 8, height: 8).opacity(on || reduceMotion ? 1 : 0.25)
+            Oscillator(period: 1.2, autoreverses: true) { phase in
+                Circle().fill(Ink.indigo).frame(width: 8, height: 8).opacity(0.25 + 0.75 * phase)
+            }
             Text(tr("Écoute du clavier…", "Listening to the keyboard…")).body(13).foregroundStyle(Ink.indigo)
         }
         .frame(minWidth: 48)
         .transition(.opacity)
-        .onAppear {
-            if !reduceMotion { withAnimation(.easeInOut(duration: 0.6).repeatForever()) { on = true } }
-        }
     }
 }
 

@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -27,7 +27,11 @@ use crate::store::{self, Entry, Store};
 use crate::i18n::{is_french, tr};
 use crate::{assist, audio, llm, macos, text};
 
+/// Rythme pendant l'écoute, la transcription ou avec la pastille affichée.
 const TICK: Duration = Duration::from_millis(33);
+/// Au repos : le fil dort, réveillé tout de suite par le raccourci, les
+/// commandes de l'interface ou la fin d'un travail (`wake`).
+const IDLE_TICK: Duration = Duration::from_millis(500);
 const BARS: usize = 18;
 const MIN_SECONDS: f32 = 0.35;
 const PILL_DELAY: Duration = Duration::from_millis(150);
@@ -137,6 +141,8 @@ pub struct Core {
     dirty: bool,
     /// Le flux micro est préparé (après l'autorisation Micro).
     audio_started: bool,
+    /// (dictées, mots, secondes), recalculé quand l'historique change.
+    stats: (i64, i64, f64),
 }
 
 impl Core {
@@ -186,7 +192,9 @@ impl Core {
             rx,
             dirty: true,
             audio_started: !onboarding,
+            stats: (0, 0, 0.0),
         };
+        core.stats = core.store.as_ref().map(|s| s.stats()).unwrap_or((0, 0, 0.0));
         core.load_engine();
         core.sync_assist();
         core
@@ -208,6 +216,7 @@ impl Core {
             let t = Instant::now();
             let result = Engine::load(&model).map(|e| (Arc::new(e), t.elapsed()));
             let _ = tx.send(Msg::EngineLoaded { result, name });
+            wake();
         });
     }
 
@@ -287,6 +296,16 @@ impl Core {
             self.pill_close_at = None;
             self.pill.visible = false;
         }
+    }
+
+    /// Écoute, transcription, pastille ou enregistreur de raccourci : la
+    /// boucle tourne à 30 Hz ; sinon elle dort.
+    fn needs_fast_tick(&self) -> bool {
+        !matches!(self.phase, Phase::Idle)
+            || self.pill.visible
+            || self.pill_close_at.is_some()
+            || self.recording_chord
+            || self.recording_command
     }
 
     fn on_msg(&mut self, msg: Msg) {
@@ -472,6 +491,7 @@ impl Core {
         std::thread::spawn(move || {
             if wanted { llm.start() } else { llm.stop() }
             let _ = tx.send(Msg::Changed);
+            wake();
         });
     }
 
@@ -569,6 +589,7 @@ impl Core {
                 Ok((text, raw, millis))
             });
             let _ = tx.send(Msg::Transcribed { result, samples, seconds, app });
+            wake();
         });
     }
 
@@ -637,11 +658,13 @@ impl Core {
                 Ok((text::process(&out.text, &prefs), out.text, out.millis))
             })();
             let _ = tx.send(Msg::Retranscribed { id, result });
+            wake();
         });
     }
 
     fn refresh_history(&mut self) {
         self.history = self.store.as_ref().map(|s| s.recent(HISTORY_LIMIT)).unwrap_or_default();
+        self.stats = self.store.as_ref().map(|s| s.stats()).unwrap_or((0, 0, 0.0));
         self.dirty = true;
     }
 
@@ -729,7 +752,7 @@ impl Core {
 
     /// Instantané complet pour l'interface.
     pub fn state_json(&self) -> String {
-        let (count, words, seconds) = self.store.as_ref().map(|s| s.stats()).unwrap_or((0, 0, 0.0));
+        let (count, words, seconds) = self.stats;
         let llm = match self.llm.status() {
             llm::Status::Ready => json!({ "state": "ready", "reason": "" }),
             llm::Status::Unknown => json!({ "state": "unknown", "reason": "" }),
@@ -811,6 +834,22 @@ fn category_key(c: assist::Category) -> &'static str {
 
 pub static CORE: Mutex<Option<Core>> = Mutex::new(None);
 
+static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+/// Réveille le fil du cœur avant la fin de son attente.
+pub fn wake() {
+    let (flag, cv) = &WAKE;
+    *flag.lock().unwrap() = true;
+    cv.notify_one();
+}
+
+fn wait(timeout: Duration) {
+    let (flag, cv) = &WAKE;
+    let guard = flag.lock().unwrap();
+    let (mut guard, _) = cv.wait_timeout_while(guard, timeout, |woken| !*woken).unwrap();
+    *guard = false;
+}
+
 /// Lance le cœur sur son fil. `emit` reçoit les événements (JSON) depuis ce
 /// fil.
 pub fn run(emit: impl Fn(&str) + Send + 'static) {
@@ -820,12 +859,14 @@ pub fn run(emit: impl Fn(&str) + Send + 'static) {
             let core = Core::new();
             *CORE.lock().unwrap() = Some(core);
             let mut last_pill = Pill::default();
+            let mut active = true;
             loop {
-                std::thread::sleep(TICK);
+                wait(if active { TICK } else { IDLE_TICK });
                 let (changed, pill) = {
                     let mut guard = CORE.lock().unwrap();
                     let Some(core) = guard.as_mut() else { break };
                     core.tick();
+                    active = core.needs_fast_tick();
                     (std::mem::take(&mut core.dirty), core.pill.clone())
                 };
                 if changed {

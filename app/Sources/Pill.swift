@@ -40,20 +40,24 @@ final class PillPanel {
 
     func update(_ state: PillState) {
         let old = model.state
-        // Le niveau change 30 fois par seconde : pas d'animation SwiftUI pour
-        // lui (la forme d'onde lisse elle-même). Les changements de mode,
-        // eux, se font avec un ressort.
-        if old.mode != state.mode || old.hands_free != state.hands_free || old.command != state.command
-            || old.message != state.message {
-            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { model.state = state }
-        } else {
-            model.state = state
-        }
+        // Les niveaux arrivent 30 fois par seconde : la forme d'onde les lit
+        // directement à chaque image, sans redessiner toute la pastille. Le
+        // reste de l'état ne la redessine que s'il change (mode, chronomètre…),
+        // les changements de mode avec un ressort.
         model.level = state.levels.last ?? 0
         model.history = state.levels
+        var stripped = state
+        stripped.levels = old.levels
+        if old.mode != state.mode || old.hands_free != state.hands_free || old.command != state.command
+            || old.message != state.message {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { model.state = stripped }
+        } else if stripped != old {
+            model.state = stripped
+        }
 
         if state.visible && !model.shown {
             hideWork?.cancel()
+            model.mounted = true
             place()
             panel.orderFrontRegardless()
             withAnimation(.spring(response: 0.42, dampingFraction: 0.68)) { model.shown = true }
@@ -62,6 +66,7 @@ final class PillPanel {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, !self.model.shown else { return }
                 self.panel.orderOut(nil)
+                self.model.mounted = false
             }
             hideWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
@@ -82,6 +87,9 @@ final class PillPanel {
 final class PillModel: ObservableObject {
     @Published var state = PillState()
     @Published var shown = false
+    /// Contenu monté : retiré une fois la pastille rangée, pour qu'aucune
+    /// animation ne tourne dans un panneau invisible.
+    @Published var mounted = false
     /// Lus par la forme d'onde à chaque image, sans redessiner la vue.
     var level: Double = 0
     var history: [Double] = []
@@ -91,8 +99,12 @@ struct PillView: View {
     @ObservedObject var model: PillModel
 
     var body: some View {
+        if model.mounted { capsule } else { Color.clear }
+    }
+
+    private var capsule: some View {
         let s = model.state
-        HStack(spacing: 10) {
+        return HStack(spacing: 10) {
             AppIcon(bundleId: s.bundle_id)
             content(s)
         }
@@ -139,7 +151,7 @@ struct PillView: View {
                 if s.hands_free && s.mode == "listening" {
                     RecordingDot().transition(.scale.combined(with: .opacity))
                 }
-                Waveform(model: model, transcribing: s.mode == "transcribing")
+                Waveform(model: model, transcribing: s.mode == "transcribing", active: model.shown)
                 if s.hands_free && s.mode == "listening" {
                     Text(String(format: "%d:%02d", s.secs / 60, s.secs % 60))
                         .font(.system(size: 11.5, weight: .medium).monospacedDigit())
@@ -156,16 +168,14 @@ struct PillView: View {
 
 /// Point rouge des mains libres, qui respire.
 struct RecordingDot: View {
-    @State private var on = false
     var body: some View {
-        Circle()
-            .fill(Ink.coral)
-            .frame(width: 7, height: 7)
-            .shadow(color: Ink.coral.opacity(on ? 0.9 : 0), radius: on ? 5 : 0)
-            .scaleEffect(on ? 1.0 : 0.78)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { on = true }
-            }
+        Oscillator(period: 1.6, autoreverses: true) { phase in
+            Circle()
+                .fill(Ink.coral)
+                .frame(width: 7, height: 7)
+                .shadow(color: Ink.coral.opacity(0.9 * phase), radius: 5 * phase)
+                .scaleEffect(0.78 + 0.22 * phase)
+        }
     }
 }
 
@@ -182,6 +192,9 @@ final class WaveState {
 struct Waveform: View {
     @ObservedObject var model: PillModel
     let transcribing: Bool
+    /// Pastille visible : sinon l'horloge d'animation s'arrête (elle
+    /// redessinait la vue à chaque image même pastille masquée).
+    let active: Bool
     @State private var wave = WaveState()
 
     static let bars = 23
@@ -192,7 +205,8 @@ struct Waveform: View {
 
     var body: some View {
         let width = CGFloat(Self.bars) * barWidth + CGFloat(Self.bars - 1) * gap
-        TimelineView(.animation) { timeline in
+        // 60 images/s suffisent (un écran ProMotion en demanderait 120).
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !active)) { timeline in
             Canvas { ctx, size in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let heights = step(now: timeline.date, t: t)

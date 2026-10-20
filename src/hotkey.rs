@@ -204,6 +204,7 @@ pub static TAP_OK: AtomicBool = AtomicBool::new(false);
 
 fn push(e: Event) {
     QUEUE.lock().unwrap().push_back(e);
+    crate::core::wake();
 }
 
 pub fn drain() -> Vec<Event> {

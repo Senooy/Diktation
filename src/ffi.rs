@@ -43,6 +43,8 @@ pub unsafe extern "C" fn dk_send(json: *const c_char) {
     if let Some(core) = CORE.lock().unwrap().as_mut() {
         core.command(&v);
     }
+    // Le fil du cœur publie le nouvel état sans attendre la fin de sa pause.
+    core::wake();
 }
 
 #[unsafe(no_mangle)]

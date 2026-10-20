@@ -42,11 +42,29 @@ pub fn open_privacy_pane(pane: &str) {
 /// Réglage « Touche 🌐 : » de macOS. 0 = Ne rien faire ; sinon l'appui sur
 /// fn ouvre aussi les emojis / la dictée Apple / change la source.
 pub fn fn_key_usage() -> Option<i64> {
-    let out = std::process::Command::new("defaults")
-        .args(["read", "com.apple.HIToolbox", "AppleFnUsageType"])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    // Lu par CFPreferences (pas de `defaults` lancé toutes les quelques
+    // secondes) ; la synchronisation récupère un changement fait dans les
+    // Réglages Système depuis la lecture précédente.
+    unsafe {
+        let app = CFString::from_static_string("com.apple.HIToolbox");
+        let key = CFString::from_static_string("AppleFnUsageType");
+        CFPreferencesAppSynchronize(app.as_concrete_TypeRef());
+        let value = CFPreferencesCopyAppValue(key.as_concrete_TypeRef(), app.as_concrete_TypeRef());
+        if value.is_null() {
+            return None;
+        }
+        let value = core_foundation::base::CFType::wrap_under_create_rule(value);
+        value.downcast::<core_foundation::number::CFNumber>().and_then(|n| n.to_i64())
+    }
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFPreferencesCopyAppValue(
+        key: core_foundation::string::CFStringRef,
+        app: core_foundation::string::CFStringRef,
+    ) -> core_foundation::base::CFTypeRef;
+    fn CFPreferencesAppSynchronize(app: core_foundation::string::CFStringRef) -> bool;
 }
 
 // ── Presse-papiers et collage ───────────────────────────────────────────────

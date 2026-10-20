@@ -673,14 +673,14 @@ struct ChordRecorderRow: View {
 
 /// « Appuyez sur les touches… » qui pulse pendant l'enregistrement d'un raccourci.
 struct ListeningLabel: View {
-    @State private var on = false
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(Ink.indigo).frame(width: 6, height: 6).opacity(on ? 1 : 0.25)
+            Oscillator(period: 1.2, autoreverses: true) { phase in
+                Circle().fill(Ink.indigo).frame(width: 6, height: 6).opacity(0.25 + 0.75 * phase)
+            }
             Text(tr("Appuyez sur les touches…", "Press the keys…")).body(12).foregroundStyle(Ink.indigo)
         }
         .transition(.opacity)
-        .onAppear { withAnimation(.easeInOut(duration: 0.6).repeatForever()) { on = true } }
     }
 }
 

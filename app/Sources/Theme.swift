@@ -162,20 +162,42 @@ struct SectionHeader: View {
 
 struct StatusDot: View {
     let ok: Bool
-    @State private var pulse = false
     var body: some View {
         Circle()
             .fill(ok ? Ink.fresh : Color(hex: 0xE8A33B))
             .frame(width: 7, height: 7)
-            .background(
-                Circle()
-                    .fill((ok ? Ink.fresh : Color(hex: 0xE8A33B)).opacity(pulse ? 0 : 0.45))
-                    .scaleEffect(pulse ? 2.6 : 1)
-            )
-            .animation(.easeInOut(duration: 0.3), value: ok)
-            .onAppear {
-                withAnimation(.easeOut(duration: ok ? 2.4 : 1.2).repeatForever(autoreverses: false)) { pulse = true }
+            // Halo seulement quand il faut attirer l'œil.
+            .background {
+                if !ok {
+                    Oscillator(period: 1.2) { phase in
+                        Circle()
+                            .fill(Color(hex: 0xE8A33B).opacity(0.45 * (1 - phase)))
+                            .scaleEffect(1 + 1.6 * phase)
+                    }
+                    .transition(.identity)
+                }
             }
+    }
+}
+
+/// Animation périodique pilotée par une horloge qui s'arrête dès que la vue
+/// disparaît. À préférer à `.repeatForever` : une animation sans fin dans
+/// une vue retirée peut empêcher SwiftUI de finir le retrait, et la fenêtre
+/// est alors redessinée à chaque image indéfiniment.
+struct Oscillator<Content: View>: View {
+    /// Durée d'un cycle en secondes.
+    let period: Double
+    /// Aller-retour (0 → 1 → 0) plutôt que dents de scie (0 → 1).
+    var autoreverses = false
+    @ViewBuilder var content: (Double) -> Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
+            let phase = autoreverses ? (1 - cos(t * 2 * .pi)) / 2 : t
+            content(reduceMotion ? 1 : phase)
+        }
     }
 }
 

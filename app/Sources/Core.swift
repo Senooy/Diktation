@@ -56,13 +56,26 @@ struct CategoryInfo: Decodable, Equatable, Identifiable {
 
 /// Modèle téléchargeable (catalogue du cœur).
 struct CatalogModel: Decodable, Equatable, Identifiable {
+    struct Download: Decodable, Equatable {
+        let name: String
+        let url: String
+    }
     let file: String
     let label: String
+    /// Taille exacte du fichier téléchargé (modèle ou archive).
     let bytes: Int64
-    let url: String
+    /// whisper, parakeet, nemotron, qwen3, cohere, canary, moonshine.
+    let engine: String
+    /// Archive tar.bz2 (sherpa-onnx) à extraire dans `archive_dir`.
+    let archive: Bool
+    let archive_dir: String
+    let download: Download
+    /// Prend en charge la langue de dictée choisie.
+    let supports_language: Bool
     let recommended: Bool
     let installed: Bool
     var id: String { file }
+    var url: String { download.url }
 }
 
 struct ToneInfo: Decodable, Equatable, Identifiable {
@@ -96,6 +109,7 @@ struct Prefs: Decodable, Equatable {
     var restore_clipboard = true
     var rewrite = true
     var command = true
+    var microphone = ""
 
     init() {}
 
@@ -115,11 +129,12 @@ struct Prefs: Decodable, Equatable {
         restore_clipboard = get(.restore_clipboard, true)
         rewrite = get(.rewrite, true)
         command = get(.command, true)
+        microphone = get(.microphone, "")
     }
 
     enum Key: String, CodingKey {
         case language, model, dictionary, replacements, snippets, remove_fillers, voice_commands, sounds,
-             keep_audio, auto_delete, restore_clipboard, rewrite, command
+             keep_audio, auto_delete, restore_clipboard, rewrite, command, microphone
     }
 }
 
@@ -142,6 +157,8 @@ struct AppState: Decodable, Equatable {
     var catalog: [CatalogModel] = []
     var install_dir = ""
     var audio_started = false
+    var microphones: [String] = []
+    var default_microphone: String?
     var model_dirs: [String] = []
     var data_dir = ""
     var languages: [Language] = []

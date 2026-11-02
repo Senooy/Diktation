@@ -143,6 +143,8 @@ pub struct Core {
     audio_started: bool,
     /// (dictées, mots, secondes), recalculé quand l'historique change.
     stats: (i64, i64, f64),
+    /// Micros présents (relus à la demande des Réglages) et micro du système.
+    mics: (Vec<String>, Option<String>),
 }
 
 impl Core {
@@ -160,6 +162,7 @@ impl Core {
         // `prompt_accessibility` puis `start_audio`.
         let onboarding = std::env::var("DIKTATION_ONBOARDING").is_ok_and(|v| v == "1");
         let accessibility = macos::accessibility_trusted(!onboarding);
+        audio::set_preferred(Some(prefs.microphone.clone()));
         if !onboarding {
             audio::init();
         }
@@ -193,6 +196,7 @@ impl Core {
             dirty: true,
             audio_started: !onboarding,
             stats: (0, 0, 0.0),
+            mics: (Vec::new(), None),
         };
         core.stats = core.store.as_ref().map(|s| s.stats()).unwrap_or((0, 0, 0.0));
         core.load_engine();
@@ -679,6 +683,9 @@ impl Core {
     fn set_prefs(&mut self, new: Prefs) {
         let old = std::mem::replace(&mut self.prefs, new);
         self.prefs.save();
+        if self.prefs.microphone != old.microphone {
+            audio::set_preferred(Some(self.prefs.microphone.clone()));
+        }
         if self.prefs.model != old.model {
             self.load_engine();
         }
@@ -737,6 +744,11 @@ impl Core {
                 macos::open_privacy_pane("Privacy_Accessibility");
             }
             "reload_model" => self.load_engine(),
+            "list_mics" => {
+                // Énumération CoreAudio : seulement quand les Réglages s'ouvrent.
+                self.mics = audio::list_inputs();
+                self.dirty = true;
+            }
             "start_audio" => {
                 audio::init();
                 self.audio_started = true;
@@ -763,7 +775,7 @@ impl Core {
         let models: Vec<Value> = installed
             .iter()
             .map(|path| {
-                let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let file = engine::id_of(path);
                 let label = engine::spec(&file).map_or("?", |m| m.label());
                 let loaded = active_model.as_ref() == Some(path);
                 json!({ "file": file, "label": label, "loaded": loaded })
@@ -773,8 +785,13 @@ impl Core {
         let catalog: Vec<Value> = engine::MODELS
             .iter()
             .map(|m| {
-                let have = installed.iter().any(|p| p.file_name().is_some_and(|n| n == m.file));
-                json!({ "file": m.file, "label": m.label(), "bytes": m.bytes, "url": m.url(),
+                let have = installed.iter().any(|p| engine::id_of(p) == m.file);
+                json!({ "file": m.file, "label": m.label(), "bytes": m.bytes,
+                        "engine": m.kind.id(),
+                        "archive": m.is_archive(),
+                        "archive_dir": m.archive_dir(),
+                        "download": { "name": m.download().0, "url": m.download().1 },
+                        "supports_language": m.supports(&self.prefs.language),
                         "recommended": m.recommended, "installed": have })
             })
             .collect();
@@ -807,6 +824,8 @@ impl Core {
             "catalog": catalog,
             "install_dir": engine::install_dir().display().to_string(),
             "audio_started": self.audio_started,
+            "microphones": self.mics.0,
+            "default_microphone": self.mics.1,
             "model_dirs": engine::model_dirs().iter().map(|d| d.display().to_string()).collect::<Vec<_>>(),
             "data_dir": prefs::data_dir().display().to_string(),
             "languages": prefs::LANGUAGES.iter().map(|(c, l)| json!({ "code": c, "label": l })).collect::<Vec<_>>(),

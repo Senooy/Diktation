@@ -684,6 +684,136 @@ struct ListeningLabel: View {
     }
 }
 
+/// Choix du micro : celui du système ou un micro précis. La liste est relue
+/// à l'ouverture de la page et sur demande (micro branché entre-temps).
+struct MicrophonePicker: View {
+    @EnvironmentObject var core: CoreModel
+
+    var body: some View {
+        let s = core.state
+        let chosen = s.prefs.microphone
+        let systemLabel = tr("Micro du système", "System microphone") + (s.default_microphone.map { " · \($0)" } ?? "")
+        VStack(alignment: .leading, spacing: 0) {
+            row(systemLabel, icon: "gearshape", selected: chosen.isEmpty) { core.setPref("microphone", "") }
+            ForEach(s.microphones, id: \.self) { name in
+                Divider().overlay(Ink.hairline)
+                row(name, icon: icon(for: name), selected: chosen == name) { core.setPref("microphone", name) }
+            }
+            if !chosen.isEmpty && !s.microphones.isEmpty && !s.microphones.contains(chosen) {
+                Divider().overlay(Ink.hairline)
+                row(chosen + tr(" (débranché)", " (unplugged)"), icon: "mic.slash", selected: true, dimmed: true) {}
+            }
+            Divider().overlay(Ink.hairline)
+            HStack {
+                Spacer()
+                Button(tr("Actualiser la liste", "Refresh list")) { core.send("list_mics") }
+                    .buttonStyle(QuietButtonStyle())
+            }
+            .padding(.vertical, 8)
+        }
+        .onAppear { core.send("list_mics") }
+    }
+
+    private func row(_ label: String, icon: String, selected: Bool, dimmed: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 13)).frame(width: 18).foregroundStyle(Ink.secondary)
+                Text(label).body(13).foregroundStyle(dimmed ? Ink.muted : Ink.primary).lineLimit(1)
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.primary)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .animation(.snappy(duration: 0.2), value: selected)
+    }
+
+    private func icon(for name: String) -> String {
+        let n = name.lowercased()
+        if n.contains("airpods") || n.contains("headphone") || n.contains("casque") || n.contains("beats") { return "headphones" }
+        if n.contains("macbook") || n.contains("intégré") || n.contains("built-in") { return "laptopcomputer" }
+        if n.contains("iphone") { return "iphone" }
+        return "mic"
+    }
+}
+
+/// Catalogue des modèles : choisir un modèle installé, ou en télécharger un
+/// (un seul téléchargement à la fois, il continue si on change de page).
+struct ModelPicker: View {
+    @EnvironmentObject var core: CoreModel
+    @ObservedObject private var downloader = ModelDownloader.shared
+
+    var body: some View {
+        let s = core.state
+        let current = s.models.first(where: \.loaded)?.file ?? s.prefs.model
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(s.catalog.enumerated()), id: \.element.id) { i, m in
+                if i > 0 { Divider().overlay(Ink.hairline) }
+                row(m, selected: m.installed && m.file == current, s: s)
+            }
+            Text(tr("Whisper tourne sur le GPU et suit le dictionnaire. Les autres modèles (sherpa-onnx, sur le processeur) ne lisent pas le dictionnaire : les corrections automatiques s'appliquent quand même.",
+                    "Whisper runs on the GPU and follows the dictionary. The other models (sherpa-onnx, on the CPU) don't read the dictionary; automatic corrections still apply."))
+                .body(11.5).foregroundStyle(Ink.muted).fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 10)
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ m: CatalogModel, selected: Bool, s: AppState) -> some View {
+        let downloading = downloader.model?.file == m.file && downloader.isActive
+        let failed: String? = {
+            if downloader.model?.file == m.file, case .failed(let msg) = downloader.phase { return msg }
+            return nil
+        }()
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: selected ? "checkmark.circle.fill" : (m.installed ? "circle" : "arrow.down.circle"))
+                .font(.system(size: 15))
+                .foregroundStyle(selected ? Ink.primary : Ink.muted)
+                .contentTransition(.symbolEffect(.replace))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(m.label).body(13, weight: selected ? .medium : .regular).foregroundStyle(Ink.primary)
+                if downloading {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: downloader.progress).progressViewStyle(.linear).tint(Ink.primary).frame(maxWidth: 260)
+                        Text(downloader.phase == .verifying ? tr("Vérification et installation…", "Verifying and installing…")
+                             : "\(ModelDownloader.format(bytes: downloader.received)) / \(ModelDownloader.format(bytes: downloader.total))"
+                               + (downloader.speed > 0 ? " · " + ModelDownloader.format(speed: downloader.speed) : ""))
+                            .body(11).foregroundStyle(Ink.muted)
+                    }
+                } else if let failed {
+                    Text(failed).body(11).foregroundStyle(Ink.coral).lineLimit(2)
+                } else {
+                    Text([ModelDownloader.format(bytes: m.bytes),
+                          m.supports_language ? nil : tr("ne prend pas en charge la langue choisie", "doesn't support the chosen language")]
+                        .compactMap { $0 }.joined(separator: " · "))
+                        .body(11).foregroundStyle(m.supports_language ? Ink.muted : Ink.coral)
+                }
+            }
+            Spacer()
+            if downloading {
+                Button(tr("Pause", "Pause")) { downloader.cancel() }.buttonStyle(QuietButtonStyle())
+            } else if m.installed {
+                if !selected {
+                    Button(tr("Utiliser", "Use")) { core.setPref("model", m.file) }.buttonStyle(QuietButtonStyle())
+                }
+            } else {
+                Button(failed != nil || (downloader.model?.file == m.file && downloader.phase == .cancelled)
+                       ? tr("Reprendre", "Resume") : tr("Télécharger", "Download")) {
+                    if downloader.model?.file == m.file { downloader.retry() } else { downloader.start(m, into: s.install_dir) }
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(downloader.isActive)
+            }
+        }
+        .padding(.vertical, 10)
+        .animation(.snappy(duration: 0.2), value: selected)
+    }
+}
+
 // MARK: - Réglages
 
 struct SettingsPage: View {
@@ -698,6 +828,12 @@ struct SettingsPage: View {
                 ChordRecorderRow(title: tr("Dictée", "Dictation"), label: s.chord_label, recording: s.recording_chord, command: "record_chord")
             }
 
+            group(tr("Micro", "Microphone"),
+                  subtitle: tr("Si le micro choisi est débranché, Diktation utilise celui du système.",
+                               "If the chosen microphone is unplugged, Diktation falls back to the system one.")) {
+                MicrophonePicker()
+            }
+
             group(tr("Langue", "Language")) {
                 FlowLayout {
                     ForEach(s.languages) { l in
@@ -708,12 +844,7 @@ struct SettingsPage: View {
             }
 
             group(tr("Modèle de transcription", "Transcription model"), subtitle: s.engine.status) {
-                FlowLayout {
-                    ForEach(s.models) { m in
-                        Chip(label: m.label, active: s.prefs.model == m.file || m.loaded) { core.setPref("model", m.file) }
-                    }
-                }
-                .padding(.vertical, 10)
+                ModelPicker()
             }
 
             group(tr("Texte", "Text")) {

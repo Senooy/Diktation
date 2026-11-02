@@ -66,6 +66,8 @@ pub struct Prefs {
     pub command: bool,
     /// Combinaison à maintenir pour le mode commande.
     pub command_chord: Chord,
+    /// Micro choisi (nom CoreAudio) ; vide : micro du système.
+    pub microphone: String,
 }
 
 impl Default for Prefs {
@@ -88,6 +90,7 @@ impl Default for Prefs {
             tones: Tones::default(),
             command: true,
             command_chord: Chord { keys: vec![Key::Fn, Key::Control] },
+            microphone: String::new(),
         }
     }
 }

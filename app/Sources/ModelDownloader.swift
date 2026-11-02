@@ -1,9 +1,11 @@
-// Téléchargement d'un modèle whisper (ggml) depuis le catalogue du cœur.
+// Téléchargement d'un modèle depuis le catalogue du cœur.
 //
 // Singleton observable : le téléchargement continue pendant que l'utilisateur
-// avance dans l'accueil. Le fichier arrive dans un fichier temporaire, n'est
-// installé que si sa taille est exactement celle du catalogue et qu'il
-// commence par la signature ggml (« lmgg »), puis le cœur recharge le modèle.
+// avance dans l'accueil. Le fichier arrive dans un fichier temporaire et n'est
+// installé que si sa taille est exactement celle du catalogue. Whisper : un
+// fichier ggml (signature « lmgg »). sherpa-onnx (Parakeet, Nemotron, Qwen3…) :
+// une archive tar.bz2 extraite dans le dossier des modèles, puis marquée
+// complète. Le cœur recharge ensuite le modèle.
 // Annulation et reprise passent par les données de reprise d'URLSession.
 
 import AppKit
@@ -87,9 +89,11 @@ final class ModelDownloader: NSObject, ObservableObject, URLSessionDownloadDeleg
                                "Could not create the models folder: \(error.localizedDescription)"))
             return
         }
-        if let free = freeSpace(at: dirURL), free < model.bytes + margin {
-            phase = .failed(tr("Espace disque insuffisant : \(Self.format(bytes: model.bytes + margin)) nécessaires, \(Self.format(bytes: free)) disponibles.",
-                               "Not enough disk space: \(Self.format(bytes: model.bytes + margin)) needed, \(Self.format(bytes: free)) available."))
+        // Une archive prend environ deux fois sa taille une fois extraite.
+        let needed = (model.archive ? model.bytes * 3 : model.bytes) + margin
+        if let free = freeSpace(at: dirURL), free < needed {
+            phase = .failed(tr("Espace disque insuffisant : \(Self.format(bytes: needed)) nécessaires, \(Self.format(bytes: free)) disponibles.",
+                               "Not enough disk space: \(Self.format(bytes: needed)) needed, \(Self.format(bytes: free)) available."))
             return
         }
         guard let url = URL(string: model.url) else {
@@ -192,7 +196,7 @@ final class ModelDownloader: NSObject, ObservableObject, URLSessionDownloadDeleg
         guard let model, let installDir else { return }
         DispatchQueue.main.sync { self.phase = .verifying }
         let fm = FileManager.default
-        let part = installDir.appendingPathComponent(".\(model.file).part")
+        let part = installDir.appendingPathComponent(".\(model.download.name).part")
         let final = installDir.appendingPathComponent(model.file)
         let result: Result<Void, InstallError>
         do {
@@ -206,16 +210,21 @@ final class ModelDownloader: NSObject, ObservableObject, URLSessionDownloadDeleg
                 throw InstallError(tr("Fichier incomplet (\(Self.format(bytes: max(0, size))) sur \(Self.format(bytes: model.bytes))).",
                                       "Incomplete file (\(Self.format(bytes: max(0, size))) of \(Self.format(bytes: model.bytes)))."))
             }
-            guard let handle = try? FileHandle(forReadingFrom: part),
-                  let head = try? handle.read(upToCount: 4), head == Data("lmgg".utf8) else {
-                throw InstallError(tr("Ce fichier n'est pas un modèle whisper (signature ggml absente).",
-                                      "This file is not a whisper model (ggml signature missing)."))
+            if model.archive {
+                try Self.extract(archive: part, into: installDir, dir: model.archive_dir)
+                try? fm.removeItem(at: part)
+            } else {
+                guard let handle = try? FileHandle(forReadingFrom: part),
+                      let head = try? handle.read(upToCount: 4), head == Data("lmgg".utf8) else {
+                    throw InstallError(tr("Ce fichier n'est pas un modèle whisper (signature ggml absente).",
+                                          "This file is not a whisper model (ggml signature missing)."))
+                }
+                if fm.fileExists(atPath: final.path) { try fm.removeItem(at: final) }
+                try fm.moveItem(at: part, to: final)
+                // Le fichier temporaire d'URLSession est en 0600 : lisible comme
+                // les autres modèles.
+                try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: final.path)
             }
-            if fm.fileExists(atPath: final.path) { try fm.removeItem(at: final) }
-            try fm.moveItem(at: part, to: final)
-            // Le fichier temporaire d'URLSession est en 0600 : lisible comme
-            // les autres modèles.
-            try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: final.path)
             result = .success(())
         } catch let e as InstallError {
             try? fm.removeItem(at: part)
@@ -248,6 +257,35 @@ final class ModelDownloader: NSObject, ObservableObject, URLSessionDownloadDeleg
                 self.phase = .failed(e.message)
             }
         }
+    }
+
+    /// Extrait l'archive avec le `tar` de macOS (bsdtar, bz2 compris) dans un
+    /// dossier temporaire, vérifie qu'elle contient le dossier attendu, puis
+    /// le met en place et le marque complet (le cœur ne charge que les
+    /// dossiers marqués).
+    private static func extract(archive: URL, into dir: URL, dir name: String) throws {
+        let fm = FileManager.default
+        let staging = dir.appendingPathComponent(".extract-\(name)")
+        try? fm.removeItem(at: staging)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+        let tar = Process()
+        tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tar.arguments = ["-xjf", archive.path, "-C", staging.path]
+        tar.standardOutput = FileHandle.nullDevice
+        tar.standardError = FileHandle.nullDevice
+        try tar.run()
+        tar.waitUntilExit()
+        let extracted = staging.appendingPathComponent(name)
+        guard tar.terminationStatus == 0, fm.fileExists(atPath: extracted.path) else {
+            throw InstallError(tr("Archive illisible ou incomplète.", "Unreadable or incomplete archive."))
+        }
+        // Les fichiers de test fournis avec le modèle ne servent pas.
+        try? fm.removeItem(at: extracted.appendingPathComponent("test_wavs"))
+        let final = dir.appendingPathComponent(name)
+        if fm.fileExists(atPath: final.path) { try fm.removeItem(at: final) }
+        try fm.moveItem(at: extracted, to: final)
+        fm.createFile(atPath: final.appendingPathComponent(".diktation-complete").path, contents: Data())
     }
 
     /// Erreur d'installation (message déjà traduit).

@@ -139,8 +139,36 @@ pub fn timings() -> (Option<u64>, u64) {
 
 struct Open {
     stream: cpal::Stream,
-    device: u32,
+    /// Micro visé à la construction (voir `target`) : reconstruire si ça change.
+    device: String,
     playing: bool,
+}
+
+/// Micro choisi dans les Réglages (nom CoreAudio) ; `None` : celui du système.
+static PREFERRED: Mutex<Option<String>> = Mutex::new(None);
+
+/// Choisit le micro. Pris en compte au prochain appui sur le raccourci.
+pub fn set_preferred(name: Option<String>) {
+    *PREFERRED.lock().unwrap() = name.filter(|n| !n.is_empty());
+}
+
+/// Clé du micro visé : le micro choisi, ou celui du système (dont
+/// l'identifiant change quand on en sélectionne un autre dans macOS).
+fn target() -> String {
+    match PREFERRED.lock().unwrap().clone() {
+        Some(name) => format!("name:{name}"),
+        None => format!("default:{}", default_input_id()),
+    }
+}
+
+/// Micros présents : (noms, nom du micro par défaut du système).
+pub fn list_inputs() -> (Vec<String>, Option<String>) {
+    let host = cpal::default_host();
+    let mut names: Vec<String> =
+        host.input_devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+    names.dedup();
+    let default = host.default_input_device().and_then(|d| d.name().ok());
+    (names, default)
 }
 
 fn run(mic: Arc<Mic>, rx: Receiver<Cmd>) {
@@ -174,7 +202,7 @@ fn run(mic: Arc<Mic>, rx: Receiver<Cmd>) {
                 }
                 *mic.armed_at.lock().unwrap() = at;
                 mic.first_ms.store(u64::MAX, Ordering::Relaxed);
-                let device = default_input_id();
+                let device = target();
                 let mut stale = mic.broken.load(Ordering::SeqCst) || open.as_ref().is_none_or(|o| o.device != device);
                 if !stale && let Some(o) = open.as_mut() {
                     match o.stream.play() {
@@ -229,9 +257,17 @@ fn run(mic: Arc<Mic>, rx: Receiver<Cmd>) {
 
 /// Construit le flux sur le micro par défaut ; il démarre aussitôt.
 fn build(mic: &Arc<Mic>) -> Result<Open> {
-    let device_id = default_input_id();
+    let device_id = target();
     let host = cpal::default_host();
-    let device = host.default_input_device().context("aucun micro")?;
+    let preferred = PREFERRED.lock().unwrap().clone();
+    // Micro choisi s'il est branché, sinon celui du système.
+    let chosen = preferred.and_then(|name| {
+        host.input_devices().ok()?.find(|d| d.name().is_ok_and(|n| n == name))
+    });
+    let device = match chosen {
+        Some(d) => d,
+        None => host.default_input_device().context("aucun micro")?,
+    };
     let supported = device.default_input_config().context("format du micro")?;
     let format = supported.sample_format();
     let config: StreamConfig = supported.into();

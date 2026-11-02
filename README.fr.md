@@ -75,14 +75,21 @@ L'icône de la barre des menus donne accès à la fenêtre, à la dernière dict
 
 ## Modèles
 
-| Modèle | Taille | Remarques |
-|---|---|---|
-| Turbo (`ggml-large-v3-turbo`) | 1,6 Go | Recommandé : le meilleur équilibre précision / vitesse |
-| Turbo compact (`ggml-large-v3-turbo-q5_0`) | 574 Mo | Quantifié, presque aussi précis |
-| Large v3 (`ggml-large-v3`) | 3,1 Go | Le plus précis, plus lent |
-| Small (`ggml-small`) | 488 Mo | Le plus rapide |
+On choisit et télécharge les modèles dans **Réglages → Modèle de transcription** (ou à l'accueil). Deux moteurs cohabitent : [whisper.cpp](https://github.com/ggml-org/whisper.cpp) sur le GPU, et [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (ONNX Runtime) pour les modèles plus récents. Temps mesurés sur une phrase de 7 secondes, sur M5 Pro, modèle chargé.
 
-Les modèles sont cherchés dans `~/Library/Application Support/Diktation/models` et `~/.cache/whisper`. On en change à tout moment dans **Réglages → Modèle de transcription**.
+| Modèle | Téléchargement | Langues | Vitesse | Remarques |
+|---|---|---|---|---|
+| Whisper Turbo (`large-v3-turbo`) | 1,6 Go | ~100 | ~0,7–1,1 s | Choix par défaut ; suit le dictionnaire |
+| NVIDIA Parakeet TDT v3 | 487 Mo | 25 européennes | ~0,3 s | Très rapide, excellent en français et en anglais |
+| NVIDIA Nemotron 3.5 ASR (juin 2026) | 475 Mo | Multilingue | ~1,3 s | Le plus récent de NVIDIA, langue imposée ou détectée |
+| Qwen3-ASR 0.6B (mars 2026) | 879 Mo | 52 | ~1,3 s | Modèle multilingue récent |
+| Cohere Transcribe (avril 2026) | 1,7 Go | 14 | ~2 s | Le plus précis des modèles récents |
+| NVIDIA Canary 180M flash | 154 Mo | fr, en, es, de | ~0,5 s | Ultra léger ; bien régler la langue de dictée (sinon il traduit) |
+| NVIDIA Parakeet Unified | 501 Mo | Anglais | ~0,3 s | Dernier Parakeet anglais |
+| Moonshine base | 111 Mo | Anglais | ~0,1 s | Quasi instantané |
+| Whisper Turbo compact, Large v3, Small | 0,5–3,1 Go | ~100 | | Autres tailles de whisper.cpp |
+
+Seul Whisper lit le dictionnaire personnel avant de transcrire ; les corrections automatiques et les raccourcis vocaux marchent avec tous les modèles. Chaque modèle garde sa propre licence (voir sa page sur Hugging Face ou dans les versions de sherpa-onnx). Les modèles sont rangés dans `~/Library/Application Support/Diktation/models` (les fichiers whisper de `~/.cache/whisper` sont aussi repris).
 
 ## Compiler soi-même
 

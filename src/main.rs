@@ -1,7 +1,7 @@
 //! Outils de test en ligne de commande, sans interface (l'app elle-même est
 //! en Swift, dans `app/`, et lie le cœur comme bibliothèque statique).
 //!
-//! - `diktation --transcribe fichier.wav`
+//! - `diktation --transcribe fichier.wav [modèle]` (identifiant du catalogue)
 //! - `diktation --rewrite <bundle id> "texte" ["titre de fenêtre"]`
 //! - `diktation --command "consigne" ["sélection"]`
 //! - `diktation --selection` (lit la sélection de l'app au premier plan)
@@ -16,7 +16,7 @@ use diktation::{assist, audio, llm, macos, text};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("--transcribe") if args.len() >= 3 => cli_transcribe(&args[2]),
+        Some("--transcribe") if args.len() >= 3 => cli_transcribe(&args[2], args.get(3).map(String::as_str)),
         Some("--rewrite") if args.len() >= 4 => cli_rewrite(&args[2], &args[3], args.get(4).map(String::as_str)),
         Some("--command") if args.len() >= 3 => cli_command(&args[2], args.get(3).map(String::as_str)),
         Some("--selection") => cli_selection(),
@@ -26,9 +26,10 @@ fn main() {
     }
 }
 
-fn cli_transcribe(path: &str) {
+fn cli_transcribe(path: &str, model: Option<&str>) {
     let prefs = Prefs::load();
-    let model = engine::resolve_model(&prefs.model).expect("aucun modèle");
+    let model = engine::resolve_model(model.unwrap_or(&prefs.model)).expect("aucun modèle");
+    eprintln!("modèle : {}", model.display());
     let t = Instant::now();
     let eng = Engine::load(&model).expect("chargement");
     eprintln!("modèle chargé en {:?}", t.elapsed());

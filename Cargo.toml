@@ -1,6 +1,6 @@
 [package]
 name = "diktation"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 
 [lib]
@@ -9,6 +9,8 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }
+# Parakeet (NVIDIA, ONNX) : bibliothèques statiques officielles de k2-fsa.
+sherpa-onnx = "2.0.1"
 cpal = "0.16"
 core-graphics = "0.25"
 core-foundation = "0.10"

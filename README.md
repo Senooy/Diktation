@@ -77,14 +77,21 @@ The menu bar icon gives quick access to the window, the last dictation and Quit.
 
 ## Models
 
-| Model | Size | Notes |
-|---|---|---|
-| Turbo (`ggml-large-v3-turbo`) | 1.6 GB | Recommended: best balance of accuracy and speed |
-| Turbo compact (`ggml-large-v3-turbo-q5_0`) | 574 MB | Quantized, nearly as accurate |
-| Large v3 (`ggml-large-v3`) | 3.1 GB | Most accurate, slower |
-| Small (`ggml-small`) | 488 MB | Fastest |
+Pick and download models in **Settings → Transcription model** (or during the first run). Two engines run side by side: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on the GPU, and [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (ONNX Runtime) for the newer models. Times below are for a 7-second sentence on an M5 Pro, model already loaded.
 
-Models are looked up in `~/Library/Application Support/Diktation/models` and `~/.cache/whisper`. You can switch at any time in **Settings → Transcription model**.
+| Model | Download | Languages | Speed | Notes |
+|---|---|---|---|---|
+| Whisper Turbo (`large-v3-turbo`) | 1.6 GB | ~100 | ~0.7–1.1 s | Recommended default; follows your dictionary |
+| NVIDIA Parakeet TDT v3 | 487 MB | 25 European | ~0.3 s | Very fast, excellent in English and French |
+| NVIDIA Nemotron 3.5 ASR (June 2026) | 475 MB | Multilingual | ~1.3 s | Newest NVIDIA model, forced or auto language |
+| Qwen3-ASR 0.6B (March 2026) | 879 MB | 52 | ~1.3 s | Recent multilingual model |
+| Cohere Transcribe (April 2026) | 1.7 GB | 14 | ~2 s | Most accurate of the newer models |
+| NVIDIA Canary 180M flash | 154 MB | en, fr, es, de | ~0.5 s | Ultra light; set the right dictation language (it translates otherwise) |
+| NVIDIA Parakeet Unified | 501 MB | English | ~0.3 s | Latest English Parakeet |
+| Moonshine base | 111 MB | English | ~0.1 s | Near-instant |
+| Whisper Turbo compact, Large v3, Small | 0.5–3.1 GB | ~100 | | Other whisper.cpp sizes |
+
+Only Whisper reads the personal dictionary before transcribing; automatic corrections and voice shortcuts work with every model. Each model keeps its own license (see its page on Hugging Face or in the sherpa-onnx releases). Models are stored in `~/Library/Application Support/Diktation/models` (whisper files in `~/.cache/whisper` are picked up too).
 
 ## Build from source
 
@@ -129,6 +136,7 @@ The core runs on its own thread and sends the UI two kinds of events: `changed` 
 ## Acknowledgements
 
 - [whisper.cpp](https://github.com/ggml-org/whisper.cpp) by Georgi Gerganov and contributors, and OpenAI's Whisper models.
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) by k2-fsa (Apache-2.0) and [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIT), and the NVIDIA, Alibaba Qwen, Cohere and Useful Sensors teams for their open speech models.
 - [whisper-rs](https://github.com/tazz4843/whisper-rs), [cpal](https://github.com/RustAudio/cpal), [objc2](https://github.com/madsmtm/objc2), [rusqlite](https://github.com/rusqlite/rusqlite).
 
 ## License

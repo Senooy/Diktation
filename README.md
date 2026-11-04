@@ -66,7 +66,7 @@ Diktation is a free, open-source alternative to subscription dictation apps. Spe
 | <kbd>⌃</kbd> <kbd>⌘</kbd> <kbd>V</kbd> | Paste the last dictation again |
 | Say “new line” / “new paragraph” | Line or paragraph break |
 
-The menu bar icon gives quick access to the window, the last dictation and Quit. Closing the window keeps Diktation running in the background.
+The menu bar icon gives quick access to the window, the last dictation and Quit. Closing the window moves Diktation to the menu bar: it leaves the Dock and the shortcut stays active. Reopen it from the menu bar icon or by launching the app again.
 
 ## Privacy
 

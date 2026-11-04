@@ -42,6 +42,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSMicrophoneUsageDescription</key><string>Diktation écoute le micro pendant que vous dictez. L'audio reste sur ce Mac.</string>
   <key>NSAppleEventsUsageDescription</key><string>Diktation colle le texte dicté dans l'app active.</string>

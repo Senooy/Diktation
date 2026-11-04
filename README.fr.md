@@ -64,7 +64,7 @@ Diktation est une alternative libre et gratuite aux apps de dictée par abonneme
 | <kbd>⌃</kbd> <kbd>⌘</kbd> <kbd>V</kbd> | Recoller la dernière dictée |
 | Dire « à la ligne » / « nouveau paragraphe » | Saut de ligne ou de paragraphe |
 
-L'icône de la barre des menus donne accès à la fenêtre, à la dernière dictée et à Quitter. Fermer la fenêtre laisse Diktation tourner en arrière-plan.
+L'icône de la barre des menus donne accès à la fenêtre, à la dernière dictée et à Quitter. Fermer la fenêtre range Diktation dans la barre des menus : l'app quitte le Dock et le raccourci reste actif. On la rouvre depuis l'icône de la barre des menus ou en relançant l'app.
 
 ## Confidentialité
 

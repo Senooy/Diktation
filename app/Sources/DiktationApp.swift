@@ -23,6 +23,13 @@ struct DiktationApp: App {
             }
             .animation(.spring(response: 0.6, dampingFraction: 0.9), value: core.isOnboarded)
             .environmentObject(core)
+            // Icône du Dock tant que la fenêtre est ouverte ; fermée, l'app
+            // ne vit plus que dans la barre des menus (LSUIElement au départ).
+            .onAppear {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .onDisappear { NSApp.setActivationPolicy(.accessory) }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 980, height: 680)

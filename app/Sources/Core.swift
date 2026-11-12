@@ -5,6 +5,17 @@ import Foundation
 
 // MARK: - État envoyé par le cœur
 
+struct SpeakerTurn: Decodable, Equatable {
+    let start: Double
+    let end: Double
+    let speaker: Int
+    let text: String
+    let overlap: Bool
+
+    var label: String { tr("Intervenant \(speaker)", "Speaker \(speaker)") }
+    var time: String { String(format: "%02d:%02d", Int(start) / 60, Int(start) % 60) }
+}
+
 struct HistoryEntry: Decodable, Identifiable, Equatable {
     let id: Int64
     let at: Int64
@@ -13,6 +24,7 @@ struct HistoryEntry: Decodable, Identifiable, Equatable {
     let seconds: Double
     let millis: Int64
     let has_audio: Bool
+    let turns: [SpeakerTurn]
 
     var date: Date { Date(timeIntervalSince1970: TimeInterval(at)) }
 }
@@ -98,6 +110,7 @@ struct Replacement: Codable, Equatable, Hashable {
 struct Prefs: Decodable, Equatable {
     var language: String = "fr"
     var model: String = ""
+    var fast_transcription = false
     var dictionary: [String] = []
     var replacements: [Replacement] = []
     var snippets: [Snippet] = []
@@ -118,6 +131,7 @@ struct Prefs: Decodable, Equatable {
         func get<T: Decodable>(_ k: Key, _ d: T) -> T { (try? c.decode(T.self, forKey: k)) ?? d }
         language = get(.language, "fr")
         model = get(.model, "")
+        fast_transcription = get(.fast_transcription, false)
         dictionary = get(.dictionary, [])
         replacements = get(.replacements, [])
         snippets = get(.snippets, [])
@@ -133,13 +147,53 @@ struct Prefs: Decodable, Equatable {
     }
 
     enum Key: String, CodingKey {
-        case language, model, dictionary, replacements, snippets, remove_fillers, voice_commands, sounds,
+        case language, model, fast_transcription, dictionary, replacements, snippets, remove_fillers, voice_commands, sounds,
              keep_audio, auto_delete, restore_clipboard, rewrite, command, microphone
     }
 }
 
+struct MeetingEntry: Decodable, Equatable, Identifiable {
+    let id: Int64
+    let at: Int64
+    let title: String
+    let notes: String
+    let status: String
+    let seconds: Double
+    let turns: [SpeakerTurn]
+    let names: [String: String]
+    let error: String
+    let audio: String
+    let language: String
+    let model: String
+    let speaker_count: Int
+    let detail_loaded: Bool
+    let source: String
+
+    var date: Date { Date(timeIntervalSince1970: Double(at)) }
+    var statusLabel: String {
+        switch status {
+        case "draft": tr("À préparer", "Draft")
+        case "recording": tr("Enregistrement", "Recording")
+        case "processing": tr("Identification des intervenants…", "Identifying speakers…")
+        case "ready": tr("Transcription terminée", "Transcript ready")
+        case "interrupted": tr("Session interrompue", "Interrupted")
+        default: tr("À reprendre", "Needs retry")
+        }
+    }
+}
+
+struct MeetingsState: Decodable, Equatable {
+    var items: [MeetingEntry] = []
+    var recording_id: Int64?
+    var processing_id: Int64?
+    var selected_id: Int64?
+    var elapsed: Int = 0
+    var error: String?
+}
+
 struct AppState: Decodable, Equatable {
     var prefs = Prefs()
+    var meetings = MeetingsState()
     var chord_label = "fn"
     var command_chord_label = "fn + ⌃"
     var history: [HistoryEntry] = []
@@ -155,6 +209,10 @@ struct AppState: Decodable, Equatable {
     var busy = false
     var models: [ModelFile] = []
     var catalog: [CatalogModel] = []
+    var speaker_models: [CatalogModel] = []
+    var speakers_ready = false
+    var analysis_id: Int64?
+    var retranscribing_id: Int64?
     var install_dir = ""
     var audio_started = false
     var microphones: [String] = []
@@ -249,12 +307,25 @@ final class CoreModel: ObservableObject {
         }
         if let s = try? JSONDecoder().decode(AppState.self, from: data), s != state {
             state = s
+            MeetingCapture.shared.reconcile(recordingID: s.meetings.recording_id)
         }
     }
 
     // MARK: Commandes
 
     func send(_ cmd: String, _ args: [String: Any] = [:]) {
+        if cmd == "meeting_start", args["source"] as? String == "microphone_system", let id = args["id"] as? Int64 {
+            MeetingCapture.shared.start(id: id, speakers: args["speakers"] as? Int ?? 0, microphone: state.prefs.microphone)
+            return
+        }
+        if cmd == "meeting_stop", let id = args["id"] as? Int64, MeetingCapture.shared.handles(id) {
+            Task { await MeetingCapture.shared.stop(id: id) }
+            return
+        }
+        sendRaw(cmd, args)
+    }
+
+    func sendRaw(_ cmd: String, _ args: [String: Any] = [:]) {
         var payload = args
         payload["cmd"] = cmd
         guard let data = try? JSONSerialization.data(withJSONObject: payload),

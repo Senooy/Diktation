@@ -16,6 +16,7 @@ pub struct Entry {
     pub seconds: f32,
     pub millis: i64,
     pub audio: Option<PathBuf>,
+    pub turns: Vec<crate::speakers::Turn>,
 }
 
 pub struct Store {
@@ -30,6 +31,10 @@ impl Store {
     pub fn open() -> Result<Self> {
         std::fs::create_dir_all(data_dir())?;
         let db = Connection::open(data_dir().join("history.sqlite"))?;
+        Self::from_connection(db)
+    }
+
+    fn from_connection(db: Connection) -> Result<Self> {
         db.execute_batch(
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS dictation (
@@ -43,6 +48,10 @@ impl Store {
                 audio TEXT
              );",
         )?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS speaker_analysis (
+            dictation_id INTEGER PRIMARY KEY,
+            turns TEXT NOT NULL
+        );")?;
         Ok(Self { db })
     }
 
@@ -55,14 +64,23 @@ impl Store {
         Ok(self.db.last_insert_rowid())
     }
 
-    pub fn update_text(&self, id: i64, text: &str, raw: &str, millis: i64) -> Result<()> {
-        self.db.execute("UPDATE dictation SET text = ?2, raw = ?3, millis = ?4 WHERE id = ?1", params![id, text, raw, millis])?;
+    pub fn update_text(&self, id: i64, text: &str, raw: &str, millis: i64, audio: &std::path::Path) -> Result<()> {
+        self.db.execute("UPDATE dictation SET text = ?2, raw = ?3, millis = ?4 WHERE id = ?1 AND audio = ?5", params![id, text, raw, millis, audio.to_string_lossy()])?;
+        Ok(())
+    }
+
+    pub fn update_turns(&self, id: i64, turns: &[crate::speakers::Turn], audio: &std::path::Path) -> Result<()> {
+        // A deleted recording must never be resurrected by a late worker result.
+        self.db.execute("INSERT OR REPLACE INTO speaker_analysis (dictation_id, turns)
+            SELECT id, ?2 FROM dictation WHERE id = ?1 AND audio = ?3", params![id, serde_json::to_string(turns)?, audio.to_string_lossy()])?;
         Ok(())
     }
 
     pub fn recent(&self, limit: usize) -> Vec<Entry> {
         let Ok(mut st) = self.db.prepare(
-            "SELECT id, at, text, raw, app, seconds, millis, audio FROM dictation ORDER BY id DESC LIMIT ?1",
+            "SELECT id, at, text, raw, app, seconds, millis, audio,
+                (SELECT turns FROM speaker_analysis WHERE dictation_id = dictation.id)
+                FROM dictation ORDER BY id DESC LIMIT ?1",
         ) else {
             return Vec::new();
         };
@@ -75,6 +93,7 @@ impl Store {
                 seconds: r.get::<_, f64>(5)? as f32,
                 millis: r.get(6)?,
                 audio: r.get::<_, Option<String>>(7)?.map(PathBuf::from),
+                turns: r.get::<_, Option<String>>(8)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
             })
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
@@ -93,6 +112,7 @@ impl Store {
         {
             let _ = std::fs::remove_file(path);
         }
+        let _ = self.db.execute("DELETE FROM speaker_analysis WHERE dictation_id = ?1", [id]);
         let _ = self.db.execute("DELETE FROM dictation WHERE id = ?1", [id]);
     }
 
@@ -110,6 +130,7 @@ impl Store {
     }
 
     pub fn clear(&self) {
+        let _ = self.db.execute("DELETE FROM speaker_analysis", []);
         let _ = self.db.execute("DELETE FROM dictation", []);
         let _ = std::fs::remove_dir_all(audio_dir());
     }
@@ -129,5 +150,41 @@ impl Store {
             })
             .unwrap_or(0);
         (n, words, secs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn speaker_results_survive_reads_and_cannot_update_reused_ids() {
+        let store = Store::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        let path = PathBuf::from("/nonexistent/recording-one.wav");
+        let id = store.add("original", "raw", "", 4., 100, Some(&path)).unwrap();
+        let turn = crate::speakers::Turn { start: 0., end: 4., speaker: 1, text: "hello".into(), overlap: false };
+        store.update_turns(id, std::slice::from_ref(&turn), &path).unwrap();
+        let entries = store.recent(10);
+        assert_eq!(entries[0].text, "original");
+        assert_eq!(entries[0].turns, vec![turn.clone()]);
+        store.delete(id);
+        let next_path = PathBuf::from("/nonexistent/recording-two.wav");
+        let next = store.add("new recording", "raw", "", 4., 100, Some(&next_path)).unwrap();
+        assert_eq!(next, id); // SQLite may reuse the last deleted rowid.
+        store.update_turns(id, &[turn], &path).unwrap();
+        store.update_text(id, "stale", "stale", 200, &path).unwrap();
+        let entries = store.recent(10);
+        assert_eq!(entries[0].text, "new recording");
+        assert!(entries[0].turns.is_empty());
+    }
+
+    #[test]
+    fn existing_history_migrates_without_losing_text() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE dictation (id INTEGER PRIMARY KEY, at INTEGER NOT NULL,
+            text TEXT NOT NULL, raw TEXT NOT NULL, app TEXT, seconds REAL, millis INTEGER, audio TEXT);
+            INSERT INTO dictation VALUES (1, 0, 'kept', 'raw', '', 2, 100, NULL);").unwrap();
+        let store = Store::from_connection(db).unwrap();
+        assert_eq!(store.recent(10)[0].text, "kept");
+        assert!(store.recent(10)[0].turns.is_empty());
     }
 }

@@ -35,6 +35,16 @@ Diktation is a free, open-source alternative to subscription dictation apps. Spe
 - **A small floating pill** shows the app you're dictating into and a live waveform, then gets out of the way.
 - **English and French interface**, following your Mac's language. Dictation itself works in many languages (English, French, Spanish, German, Italian, Arabic, auto-detect…).
 
+## Meeting workspace
+
+The **Meetings** sidebar opens a dedicated workspace: choose in-person microphone recording or video-call microphone + Mac audio, read provisional text in 5-second passages, and take personal notes alongside it. Finishing the recording produces a timestamped speaker transcript. Names can be assigned manually, notes are saved automatically, and the whole document can be copied or exported as Markdown. Meetings keep their own audio and history. Video-call mode requests macOS screen/system-audio permission and includes other apps’ audio; use headphones to avoid echo. [Usage and validation notes](docs/mode-reunion.md).
+
+## Speaker analysis and decoding speed
+
+Settings now includes optional fast Whisper decoding and two downloadable speaker models (~47 MB). Keep audio enabled, then use the speakers menu on a history entry to detect voices automatically or specify their count. Results include timestamps and a separate copy action; the original dictation is preserved. Speaker numbers belong to one recording, not to named identities across recordings. Overlapping speech is flagged but not separated into audio tracks.
+
+See the [validation notes and measured limits](docs/transcription-et-intervenants.md) for reproducible commands and latency results.
+
 ## Requirements
 
 - A Mac with **Apple silicon** (M1 or later).
@@ -70,9 +80,9 @@ The menu bar icon gives quick access to the window, the last dictation and Quit.
 
 ## Privacy
 
-- Audio is captured only while you dictate. The microphone stream is paused the rest of the time.
+- The microphone stays active during dictation and for up to 10 seconds afterward to reduce latency between recordings. A 300 ms pre-roll is kept in memory during that period; the stream then pauses.
 - Transcription runs locally with whisper.cpp. Style and command mode use Apple's on-device foundation model through the FoundationModels framework.
-- The only network access is the one-time model download from the official [whisper.cpp repository on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp).
+- Network access checks and downloads app updates through GitHub Releases, and downloads models from the official [whisper.cpp repository on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) and [sherpa-onnx releases on GitHub](https://github.com/k2-fsa/sherpa-onnx/releases). Transcription and speaker analysis run locally.
 - History, audio and settings live in `~/Library/Application Support/Diktation`. Delete that folder to erase everything.
 
 ## Models
@@ -104,6 +114,8 @@ cd Diktation
 open Diktation.app
 ```
 
+Starting with 1.2.0, Sparkle checks for updates automatically and supports background downloads. Controls are in Settings → Updates. Older versions require one final manual installation. See the [distribution guide (French)](docs/mises-a-jour.md) for signing, notarization and GitHub Actions setup.
+
 `./release.sh` builds a notarized DMG (it needs a Developer ID certificate and a `notarytool` keychain profile; see the script header). Command-line tools for testing without the UI:
 
 ```sh
@@ -134,6 +146,8 @@ diktation-llm (llm/main.swift)  ◀── Apple Intelligence (FoundationModels),
 The core runs on its own thread and sends the UI two kinds of events: `changed` (re-read the state snapshot) and `pill` (what the floating pill should show, about 30 times a second while listening).
 
 ## Acknowledgements
+
+- [Sparkle](https://sparkle-project.org/) for signed macOS updates.
 
 - [whisper.cpp](https://github.com/ggml-org/whisper.cpp) by Georgi Gerganov and contributors, and OpenAI's Whisper models.
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) by k2-fsa (Apache-2.0) and [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIT), and the NVIDIA, Alibaba Qwen, Cohere and Useful Sensors teams for their open speech models.

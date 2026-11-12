@@ -214,10 +214,12 @@ final class ModelDownloader: NSObject, ObservableObject, URLSessionDownloadDeleg
                 try Self.extract(archive: part, into: installDir, dir: model.archive_dir)
                 try? fm.removeItem(at: part)
             } else {
-                guard let handle = try? FileHandle(forReadingFrom: part),
-                      let head = try? handle.read(upToCount: 4), head == Data("lmgg".utf8) else {
-                    throw InstallError(tr("Ce fichier n'est pas un modèle whisper (signature ggml absente).",
-                                          "This file is not a whisper model (ggml signature missing)."))
+                if model.engine == "whisper" {
+                    guard let handle = try? FileHandle(forReadingFrom: part),
+                          let head = try? handle.read(upToCount: 4), head == Data("lmgg".utf8) else {
+                        throw InstallError(tr("Ce fichier n'est pas un modèle whisper (signature ggml absente).",
+                                              "This file is not a whisper model (ggml signature missing)."))
+                    }
                 }
                 if fm.fileExists(atPath: final.path) { try fm.removeItem(at: final) }
                 try fm.moveItem(at: part, to: final)
@@ -247,7 +249,9 @@ final class ModelDownloader: NSObject, ObservableObject, URLSessionDownloadDeleg
                     // `set_prefs` recharge déjà le moteur quand le modèle change ;
                     // sinon on le demande explicitement. Un seul chargement.
                     let core = CoreModel.shared
-                    if core.state.prefs.model == model.file {
+                    if model.engine == "diarization" {
+                        core.send("refresh_models")
+                    } else if core.state.prefs.model == model.file {
                         core.send("reload_model")
                     } else {
                         core.setPref("model", model.file)

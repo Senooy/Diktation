@@ -39,6 +39,8 @@ pub struct Prefs {
     pub chord: Chord,
     /// Code langue whisper (`fr`, `en`, `auto`…).
     pub language: String,
+    /// Greedy Whisper decoding; opt in to trade accuracy for latency.
+    pub fast_transcription: bool,
     /// Fichier du modèle (`ggml-large-v3-turbo.bin`).
     pub model: String,
     /// Mots à bien orthographier (amorce whisper).
@@ -75,6 +77,7 @@ impl Default for Prefs {
         Self {
             chord: Chord::default(),
             language: if crate::i18n::is_french() { "fr" } else { "en" }.into(),
+            fast_transcription: false,
             model: "ggml-large-v3-turbo.bin".into(),
             dictionary: vec!["Diktation".into()],
             replacements: Vec::new(),

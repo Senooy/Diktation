@@ -1,0 +1,87 @@
+name: Publish signed macOS update
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diktation-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Opt in only after provisioning the signing secrets. Local publication remains available.
+    if: vars.RELEASE_AUTOMATION_ENABLED == 'true'
+    runs-on: macos-26
+    timeout-minutes: 75
+    # Configure the signing secrets in this environment before the first tagged release.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$(uname -m)" = arm64
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test "$RELEASE_TAG" = "v$VERSION"
+          test -f "docs/releases/$VERSION.md"
+          xcodebuild -version
+      - name: Prepare Rust and build tools
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          command -v cmake >/dev/null || brew install cmake
+      - name: Test core and update tooling
+        run: |
+          export MACOSX_DEPLOYMENT_TARGET=14.0 CMAKE_OSX_DEPLOYMENT_TARGET=14.0
+          cargo test --locked --lib
+          python3 -m unittest discover -s tests -p 'test_updates.py'
+          swiftc app/Sources/UpdateActivity.swift tests/UpdateActivityTests.swift -o /tmp/update-activity-tests
+          /tmp/update-activity-tests
+      - name: Import signing credentials into temporary runner keychain
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -eu
+          python3 scripts/ci-signing.py
+      - name: Build, notarize and generate signed update feed
+        env:
+          NOTARY_PROFILE: diktation-ci
+          NOTARY_KEYCHAIN: ${{ runner.temp }}/diktation-release.keychain-db
+          SPARKLE_KEY_FILE: ${{ runner.temp }}/diktation-sparkle.key
+        run: ./release.sh
+      - name: Retain verified release artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: signed-diktation-release
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/appcast.xml
+            dist/SHA256SUMS-*.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish atomically through a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/publish-release.sh
+      - name: Remove runner signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/diktation-release.keychain-db" || true
+          rm -f "$RUNNER_TEMP/diktation-certificate.p12" "$RUNNER_TEMP/diktation-sparkle.key"

@@ -12,9 +12,10 @@
 //! écartées.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{Context as _, Result, bail};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 /// Échantillonnage attendu par whisper.
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -248,12 +249,12 @@ pub fn resolve_model(pref: &str) -> Option<PathBuf> {
 }
 
 pub struct Engine {
-    backend: Backend,
+    backend: Mutex<Backend>,
     pub model: PathBuf,
 }
 
 enum Backend {
-    Whisper(WhisperContext),
+    Whisper(WhisperState),
     /// Modèle en flux (Nemotron) : on lui donne toute la dictée d'un coup.
     Online(sherpa_onnx::OnlineRecognizer),
     Sherpa { recognizer: sherpa_onnx::OfflineRecognizer, kind: Kind, languages: &'static [&'static str] },
@@ -281,7 +282,8 @@ impl Engine {
         let path = model.to_str().context("chemin du modèle non UTF-8")?;
         let ctx = WhisperContext::new_with_params(path, params)
             .map_err(|e| anyhow::anyhow!("chargement de {path} : {e}"))?;
-        Ok(Self { backend: Backend::Whisper(ctx), model: model.to_path_buf() })
+        let state = ctx.create_state().map_err(|e| anyhow::anyhow!("état whisper : {e}"))?;
+        Ok(Self { backend: Mutex::new(Backend::Whisper(state)), model: model.to_path_buf() })
     }
 
     fn load_sherpa(dir: &Path, m: &'static ModelSpec) -> Result<Self> {
@@ -345,7 +347,7 @@ impl Engine {
         mc.debug = false;
         let recognizer = sherpa_onnx::OfflineRecognizer::create(&config)
             .with_context(|| format!("chargement de {}", dir.display()))?;
-        Ok(Self { backend: Backend::Sherpa { recognizer, kind: m.kind, languages: m.languages }, model: dir.to_path_buf() })
+        Ok(Self { backend: Mutex::new(Backend::Sherpa { recognizer, kind: m.kind, languages: m.languages }), model: dir.to_path_buf() })
     }
 
     fn load_online(dir: &Path, _m: &'static ModelSpec) -> Result<Self> {
@@ -361,7 +363,7 @@ impl Engine {
         config.model_config.debug = false;
         let recognizer = sherpa_onnx::OnlineRecognizer::create(&config)
             .with_context(|| format!("chargement de {}", dir.display()))?;
-        Ok(Self { backend: Backend::Online(recognizer), model: dir.to_path_buf() })
+        Ok(Self { backend: Mutex::new(Backend::Online(recognizer)), model: dir.to_path_buf() })
     }
 
     /// Nemotron : toute la dictée d'un bloc, puis décodage jusqu'au bout.
@@ -379,7 +381,7 @@ impl Engine {
         while recognizer.is_ready(&stream) {
             recognizer.decode(&stream);
         }
-        let text = recognizer.get_result(&stream).map(|r| r.text.trim().to_string()).unwrap_or_default();
+        let text = recognizer.get_result(&stream).context("missing streaming transcription result")?.text.trim().to_string();
         Ok(Output { text, millis: started.elapsed().as_millis() })
     }
 
@@ -409,21 +411,39 @@ impl Engine {
         data.extend(std::iter::repeat_n(0.0, SAMPLE_RATE as usize * 3 / 10));
         stream.accept_waveform(SAMPLE_RATE as i32, &data);
         recognizer.decode(&stream);
-        let text = stream.get_result().map(|r| r.text.trim().to_string()).unwrap_or_default();
+        let text = stream.get_result().context("missing transcription result")?.text.trim().to_string();
         Ok(Output { text, millis: started.elapsed().as_millis() })
     }
 
     /// Transcrit des échantillons 16 kHz mono f32.
     pub fn transcribe(&self, samples: &[f32], language: &str, prompt: &str) -> Result<Output> {
+        self.transcribe_with_options(samples, language, prompt, false)
+    }
+
+    /// Each backend has mutable native state: serialize inference and reuse its buffers.
+    pub fn transcribe_with_options(&self, samples: &[f32], language: &str, prompt: &str, fast: bool) -> Result<Output> {
         let started = std::time::Instant::now();
+        if samples.iter().any(|x| !x.is_finite()) {
+            bail!("audio contains non-finite samples");
+        }
         if samples.len() < (SAMPLE_RATE as usize) / 4 {
             bail!(crate::i18n::tr("enregistrement trop court", "recording too short"));
         }
-        let ctx = match &self.backend {
-            Backend::Whisper(ctx) => ctx,
+        // Exact/near digital silence must never generate text, on any backend.
+        if samples.iter().all(|x| x.abs() < 1e-5) {
+            return Ok(Output { text: String::new(), millis: started.elapsed().as_millis() });
+        }
+        let mut backend = self.backend.lock().map_err(|_| anyhow::anyhow!("transcription engine unavailable"))?;
+        let state = match &mut *backend {
+            Backend::Whisper(state) => state,
             Backend::Online(r) => return Self::transcribe_online(r, samples, language, started),
             Backend::Sherpa { recognizer, kind, languages } => {
-                return Self::transcribe_sherpa(recognizer, *kind, languages, samples, language, started);
+                let mut parts = Vec::new();
+                for range in chunk_ranges(samples, SAMPLE_RATE as usize * 25) {
+                    let out = Self::transcribe_sherpa(recognizer, *kind, languages, &samples[range], language, started)?;
+                    if !out.text.is_empty() { parts.push(out.text); }
+                }
+                return Ok(Output { text: parts.join(" "), millis: started.elapsed().as_millis() });
             }
         };
         // whisper rate les débuts de moins d'une seconde : on complète par du
@@ -439,8 +459,10 @@ impl Engine {
             samples
         };
 
-        let mut state = ctx.create_state().map_err(|e| anyhow::anyhow!("état whisper : {e}"))?;
-        let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
+        let strategy = if fast { SamplingStrategy::Greedy { best_of: 1 } }
+            else { SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 } };
+        let mut params = FullParams::new(strategy);
+        if fast { params.set_temperature_inc(0.0); }
         let lang = if language == "auto" { None } else { Some(language) };
         params.set_language(lang);
         params.set_n_threads(threads());
@@ -480,25 +502,9 @@ fn threads() -> i32 {
     std::thread::available_parallelism().map(|n| n.get().min(8) as i32).unwrap_or(4)
 }
 
-/// Phrases que whisper produit sur un silence ou un bruit (sous-titres de son
-/// corpus d'entraînement).
+/// Explicit non-speech annotations only; phrases like “thanks for watching” can be real speech.
 fn is_ghost(s: &str) -> bool {
-    let l = s.to_lowercase();
-    const GHOSTS: [&str; 12] = [
-        "sous-titrage",
-        "sous-titres réalisés",
-        "amara.org",
-        "radio-canada",
-        "merci d'avoir regardé",
-        "abonnez-vous",
-        "thanks for watching",
-        "thank you for watching",
-        "subtitles by",
-        "[musique]",
-        "[music]",
-        "(musique)",
-    ];
-    GHOSTS.iter().any(|g| l.contains(g)) || (l.starts_with('[') && l.ends_with(']'))
+    matches!(s.trim().to_lowercase().as_str(), "[musique]" | "[music]" | "(musique)" | "[silence]" | "[blank_audio]")
 }
 
 /// Amorce whisper : une phrase naturelle qui contient les mots du
@@ -513,5 +519,54 @@ pub fn build_prompt(words: &[String], language: &str) -> String {
     match language {
         "en" => format!("Glossary: {list}."),
         _ => format!("Vocabulaire : {list}."),
+    }
+}
+
+/// Bound offline decoder context without dropping or duplicating samples. Prefer
+/// a quiet 100 ms boundary in the last 5 s; never leave an untranscribable tail.
+pub(crate) fn chunk_ranges(samples: &[f32], max: usize) -> Vec<std::ops::Range<usize>> {
+    let minimum = SAMPLE_RATE as usize / 4;
+    let window = SAMPLE_RATE as usize / 10;
+    assert!(max > minimum + window);
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while samples.len() - start > max {
+        let limit = (start + max).min(samples.len() - minimum);
+        let search = (limit.saturating_sub(SAMPLE_RATE as usize * 5)).max(start + minimum);
+        let cut = (search..=limit.saturating_sub(window)).step_by(window)
+            .min_by(|a, b| {
+                let energy = |i: usize| samples[i..i + window].iter().map(|x| x * x).sum::<f32>();
+                energy(*a).total_cmp(&energy(*b))
+            }).map(|i| i + window / 2).unwrap_or(limit);
+        ranges.push(start..cut);
+        start = cut;
+    }
+    if start < samples.len() { ranges.push(start..samples.len()); }
+    ranges
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn spoken_phrases_are_not_blacklisted() {
+        assert!(!is_ghost("Merci d'avoir regardé la présentation, à demain."));
+        assert!(!is_ghost("Thanks for watching"));
+        assert!(!is_ghost("Je travaille à Radio-Canada."));
+        assert!(is_ghost("[music]"));
+    }
+    #[test]
+    fn chunks_cover_audio_and_prefer_a_pause() {
+        let rate = SAMPLE_RATE as usize;
+        let mut audio = vec![0.2; rate * 51 + 10];
+        audio[rate * 23..rate * 24].fill(0.);
+        let ranges = chunk_ranges(&audio, rate * 25);
+        assert!(ranges[0].end >= rate * 23 && ranges[0].end < rate * 24);
+        assert_eq!(ranges.first().unwrap().start, 0);
+        assert_eq!(ranges.last().unwrap().end, audio.len());
+        for pair in ranges.windows(2) { assert_eq!(pair[0].end, pair[1].start); }
+        for range in ranges { assert!(range.len() <= rate * 25 && range.len() >= rate / 4); }
+        let ranges = chunk_ranges(&vec![0.2; rate * 25 + 1], rate * 25);
+        assert!(ranges.last().unwrap().len() >= rate / 4);
     }
 }

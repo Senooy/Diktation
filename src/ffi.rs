@@ -61,3 +61,13 @@ pub unsafe extern "C" fn dk_free(s: *mut c_char) {
         drop(unsafe { CString::from_raw(s) });
     }
 }
+
+/// Push one 16 kHz mono packet on the meeting timeline. Track 0 = mic, 1 = Mac audio.
+/// # Safety
+/// `samples` must point to `count` readable f32 samples during this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dk_meeting_audio(id:i64, track:u32, offset:u64, samples:*const f32, count:usize)->bool {
+    if samples.is_null() || count==0 || count>32_000 || offset>57_600_000 || track>1 { return false; }
+    let samples=unsafe { std::slice::from_raw_parts(samples,count) };
+    crate::meeting_audio::push(id,track as usize,offset as usize,samples)
+}

@@ -214,20 +214,7 @@ struct OnboardingView: View {
 /// Lavis menthe → lavande très doux dans les coins (la direction du site).
 struct OnboardingWash: View {
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                Circle()
-                    .fill(RadialGradient(colors: [Ink.mint, Ink.mint.opacity(0)], center: .center, startRadius: 0, endRadius: 320))
-                    .frame(width: 640, height: 640)
-                    .position(x: geo.size.width * 0.12, y: geo.size.height * 0.08)
-                Circle()
-                    .fill(RadialGradient(colors: [Ink.lavender, Ink.lavender.opacity(0)], center: .center, startRadius: 0, endRadius: 360))
-                    .frame(width: 720, height: 720)
-                    .position(x: geo.size.width * 0.9, y: geo.size.height * 0.95)
-            }
-            .opacity(0.8)
-        }
-        .allowsHitTesting(false)
+        AuroraBackdrop().opacity(0.62).allowsHitTesting(false)
     }
 }
 
@@ -476,8 +463,8 @@ struct WelcomeStep: View {
             EchoLogo(size: 128, animated: !reduceMotion)
                 .reveal(shown, delay: 0, reduceMotion: reduceMotion)
             VStack(spacing: 14) {
-                Tag(text: tr("Dictée locale", "Local dictation"))
-                Text(tr("Parlez naturellement,\nDiktation écrit.", "Speak naturally,\nDiktation writes."))
+                Tag(text: tr("Bienvenue chez vous", "Make yourself at home"))
+                Text(tr("Vos idées à voix haute.\nLe reste, c’est Diktation.", "Your ideas, out loud.\nDiktation does the rest."))
                     .display(40).lineSpacing(3).multilineTextAlignment(.center)
                 Text(tr("Maintenez une touche, parlez, relâchez : le texte apparaît là où est votre curseur, dans n'importe quelle app.",
                         "Hold a key, speak, release: the text appears where your cursor is, in any app."))

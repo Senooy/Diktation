@@ -23,6 +23,8 @@ struct DiktationApp: App {
             }
             .animation(.spring(response: 0.6, dampingFraction: 0.9), value: core.isOnboarded)
             .environmentObject(core)
+            .font(BrandFont.text(13))
+            .tint(Ink.indigo)
             // Icône du Dock tant que la fenêtre est ouverte ; fermée, l'app
             // ne vit plus que dans la barre des menus (LSUIElement au départ).
             .onAppear {
@@ -32,7 +34,10 @@ struct DiktationApp: App {
             .onDisappear { NSApp.setActivationPolicy(.accessory) }
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 980, height: 680)
+        .defaultSize(width: 1120, height: 760)
+        .commands {
+            CommandGroup(after: .appInfo) { UpdateMenuButton().environmentObject(core) }
+        }
 
         MenuBarExtra {
             MenuContent().environmentObject(core)
@@ -48,7 +53,14 @@ struct MenuContent: View {
 
     var body: some View {
         let s = core.state
+        if let id = s.meetings.recording_id {
+            Text(tr("Réunion en cours · \(s.meetings.elapsed / 60) min", "Meeting recording · \(s.meetings.elapsed / 60) min"))
+            Button(tr("Terminer la réunion", "Finish meeting")) { core.send("meeting_stop", ["id": id]) }
+        } else if s.meetings.processing_id != nil {
+            Text(tr("Finalisation de la réunion…", "Finalizing meeting…"))
+        } else {
         Text(s.engine.ready ? tr("Prêt · maintenir \(s.chord_label) pour dicter", "Ready · hold \(s.chord_label) to dictate") : s.engine.status)
+        }
         Divider()
         Button(tr("Ouvrir Diktation", "Open Diktation")) {
             openWindow(id: "main")
@@ -63,16 +75,38 @@ struct MenuContent: View {
             }
         }
         Divider()
+        UpdateMenuButton().environmentObject(core)
         Button(tr("Quitter Diktation", "Quit Diktation")) { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var finishingMeeting = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             CoreModel.shared.start()
+            AppUpdates.shared.observeApplication()
         }
+    }
+
+    /// Finish and save an active meeting before allowing a normal app quit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MeetingCapture.shared.cancelPreparation()
+        CoreModel.shared.refresh()
+        let meetings = CoreModel.shared.state.meetings
+        guard meetings.recording_id != nil || meetings.processing_id != nil else { return .terminateNow }
+        guard !finishingMeeting else { return .terminateLater }
+        finishingMeeting = true
+        if let id = meetings.recording_id { CoreModel.shared.send("meeting_stop", ["id": id]) }
+        Task { @MainActor in
+            // Give the core time to publish the stop command before checking completion.
+            repeat {
+                try? await Task.sleep(for: .milliseconds(250))
+            } while CoreModel.shared.state.meetings.recording_id != nil || CoreModel.shared.state.meetings.processing_id != nil
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     /// Fermer la fenêtre ne quitte pas : le raccourci reste actif.

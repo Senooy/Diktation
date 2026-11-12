@@ -4,12 +4,13 @@ import AppKit
 import SwiftUI
 
 enum Page: String, CaseIterable, Identifiable {
-    case home, history, dictionary, snippets, style, settings
+    case home, meetings, history, dictionary, snippets, style, settings
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .home: tr("Accueil", "Home")
+        case .meetings: tr("Réunions", "Meetings")
         case .history: tr("Historique", "History")
         case .dictionary: tr("Dictionnaire", "Dictionary")
         case .snippets: tr("Raccourcis vocaux", "Voice shortcuts")
@@ -21,6 +22,7 @@ enum Page: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .home: "house"
+        case .meetings: "person.3.sequence"
         case .history: "clock.arrow.circlepath"
         case .dictionary: "character.book.closed"
         case .snippets: "text.bubble"
@@ -39,28 +41,33 @@ struct MainView: View {
         HStack(spacing: 0) {
             sidebar
             Rectangle().fill(Ink.hairline).frame(width: 0.8)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    switch page {
-                    case .home: HomePage(go: select)
-                    case .history: HistoryPage()
-                    case .dictionary: DictionaryPage()
-                    case .snippets: SnippetsPage()
-                    case .style: StylePage()
-                    case .settings: SettingsPage()
+            if page == .meetings {
+                MeetingsPage(openSettings: { select(.settings) }).background(Ink.paper)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        switch page {
+                        case .home: HomePage(go: select)
+                        case .meetings: EmptyView()
+                        case .history: HistoryPage()
+                        case .dictionary: DictionaryPage()
+                        case .snippets: SnippetsPage()
+                        case .style: StylePage()
+                        case .settings: SettingsPage()
+                        }
                     }
+                    .id(page)
+                    .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .opacity))
+                    .frame(maxWidth: 920, alignment: .leading)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 36)
+                    .padding(.bottom, 40)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .id(page)
-                .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .opacity))
-                .frame(maxWidth: 720, alignment: .leading)
-                .padding(.horizontal, 40)
-                .padding(.top, 36)
-                .padding(.bottom, 40)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Ink.paper)
             }
-            .background(Ink.paper)
         }
-        .frame(minWidth: 820, minHeight: 560)
+        .frame(minWidth: page == .meetings ? 1080 : 940, minHeight: 680)
         .ignoresSafeArea()
         .preferredColorScheme(.light)
     }
@@ -73,31 +80,38 @@ struct MainView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high).frame(width: 22, height: 22)
-                Text("Diktation").font(.system(size: 17, weight: .regular)).tracking(-0.4)
+                BrandGlyph(size: 32)
+                Text("Diktation").font(BrandFont.text(20, weight: .bold)).tracking(-0.8)
             }
             .foregroundStyle(Ink.primary)
             .padding(.horizontal, 10)
             .padding(.top, 46)
             .padding(.bottom, 18)
 
-            ForEach(Page.allCases) { p in
+            Text(tr("VOTRE ESPACE", "YOUR SPACE")).body(9, weight: .bold).tracking(1.2)
+                .foregroundStyle(Ink.muted).padding(.horizontal, 12).padding(.vertical, 12)
+            ForEach([Page.home, .meetings, .history]) { p in
+                SidebarRow(page: p, selected: page == p, namespace: selection) { select(p) }
+            }
+            Text(tr("À VOTRE MAIN", "MAKE IT YOURS")).body(9, weight: .bold).tracking(1.2)
+                .foregroundStyle(Ink.muted).padding(.horizontal, 12).padding(.top, 30).padding(.bottom, 12)
+            ForEach([Page.dictionary, .snippets, .style, .settings]) { p in
                 SidebarRow(page: p, selected: page == p, namespace: selection) { select(p) }
             }
             Spacer()
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     StatusDot(ok: core.state.engine.ready && core.state.hotkey_active && core.state.accessibility)
-                    Text(core.state.engine.ready ? tr("Prêt", "Ready") : tr("Démarrage…", "Starting…")).body(11.5).foregroundStyle(Ink.secondary)
+                    Text(core.state.meetings.recording_id != nil ? tr("Réunion en cours", "Meeting recording") : core.state.meetings.processing_id != nil ? tr("Finalisation…", "Finalizing…") : core.state.engine.ready ? tr("Prêt", "Ready") : tr("Démarrage…", "Starting…")).body(11.5).foregroundStyle(Ink.secondary)
                 }
-                Text(tr("100 % local · whisper.cpp", "100% local · whisper.cpp")).body(11).foregroundStyle(Ink.muted)
+                Text(tr("Vos mots restent sur ce Mac.", "Your words stay on this Mac.")).body(11).foregroundStyle(Ink.muted)
             }
             .padding(.horizontal, 10)
             .padding(.bottom, 16)
         }
         .padding(.horizontal, 10)
-        .frame(width: 216)
-        .background(Ink.canvas)
+        .frame(width: 208)
+        .background(Ink.canvas.opacity(0.65))
     }
 }
 
@@ -120,16 +134,16 @@ struct SidebarRow: View {
             }
             .foregroundStyle(selected ? Ink.primary : (hovered ? Ink.primary.opacity(0.8) : Ink.secondary))
             .padding(.horizontal, 10)
-            .frame(height: 32)
+            .frame(height: 42)
             .background {
                 if selected {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Ink.paper)
-                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Ink.hairline, lineWidth: 0.8))
+                    RoundedRectangle(cornerRadius: 13)
+                        .fill(Ink.lavender.opacity(0.8))
+                        .overlay(RoundedRectangle(cornerRadius: 13).stroke(Ink.hairline, lineWidth: 0.8))
                         .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
                         .matchedGeometryEffect(id: "selection", in: namespace)
                 } else if hovered {
-                    RoundedRectangle(cornerRadius: 7).fill(Ink.hairline.opacity(0.5))
+                    RoundedRectangle(cornerRadius: 13).fill(Ink.hairline.opacity(0.5))
                 }
             }
             .contentShape(Rectangle())
@@ -151,67 +165,89 @@ struct PressStyle: ButtonStyle {
 struct HomePage: View {
     @EnvironmentObject var core: CoreModel
     let go: (Page) -> Void
-    @State private var heroIn = false
+    @State private var showPractice = false
 
     var body: some View {
         let s = core.state
-        VStack(alignment: .leading, spacing: 28) {
-            hero(s)
-                .onAppear { withAnimation(.easeOut(duration: 0.6)) { heroIn = true } }
-            if !s.accessibility || s.fn_conflict || s.last_error != nil || s.engine.failed {
-                warnings(s).transition(.opacity.combined(with: .move(edge: .top)))
+        VStack(alignment: .leading, spacing: 24) {
+            HStack {
+                Text(tr("Un peu de voix. Beaucoup de possibilités.", "A little voice. A lot of possibility.")).body(12).foregroundStyle(Ink.secondary)
+                Spacer()
+                HStack(spacing: 6) {
+                    StatusDot(ok: s.engine.ready && s.accessibility && s.hotkey_active)
+                    Text(s.engine.ready && s.accessibility && s.hotkey_active ? tr("Tout est prêt", "Ready when you are") : tr("Configuration en cours", "Getting ready")).body(11)
+                }.foregroundStyle(Ink.secondary)
             }
-            stats(s)
-            status(s)
+            hero(s)
+            if !s.accessibility || s.fn_conflict || s.last_error != nil || s.engine.failed {
+                warnings(s)
+            }
+            HStack(alignment: .top, spacing: 16) {
+                actionCard(symbol: "waveform", title: tr("Dicter un texte", "Dictate a thought"),
+                           detail: tr("Un message, un mail, une idée.\nParlez, les mots suivent.", "A message, an email, an idea.\nSpeak and the words follow."),
+                           action: tr("Essayer la dictée", "Try dictation"), tint: Ink.lavender) { showPractice = true }
+                actionCard(symbol: "person.2", title: tr("Garder une réunion", "Capture a meeting"),
+                           detail: tr("Les échanges transcrits.\nVos notes juste à côté.", "The conversation, transcribed.\nYour notes right alongside."),
+                           action: s.meetings.recording_id != nil || s.meetings.processing_id != nil ? tr("Revenir à la réunion", "Return to meeting") : tr("Préparer une réunion", "Prepare a meeting"), tint: Color(hex: 0xF3E3E9)) {
+                    if s.meetings.recording_id == nil && s.meetings.processing_id == nil { core.send("meeting_create") }
+                    go(.meetings)
+                }
+            }
             if let last = s.history.first, !last.text.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    SectionHeader(title: tr("Dernière dictée", "Last dictation"))
+                    HStack {
+                        SectionHeader(title: tr("Vos derniers mots", "Your latest words"))
+                        Spacer()
+                        Button(tr("Tout retrouver", "See everything")) { go(.history) }.buttonStyle(QuietButtonStyle())
+                    }
                     Card {
-                        Text(last.text).body(13.5).foregroundStyle(Ink.primary).textSelection(.enabled)
-                            .id(last.id)
-                            .transition(.opacity.combined(with: .offset(y: 6)))
-                        Text("\(last.app.isEmpty ? "" : last.app + " · ")\(last.date.formatted(date: .omitted, time: .shortened))")
-                            .body(11.5).foregroundStyle(Ink.muted).padding(.top, 8)
+                        Text(last.text).body(13).foregroundStyle(Ink.primary).lineLimit(3).textSelection(.enabled)
+                        Text(last.date.formatted(date: .abbreviated, time: .shortened))
+                            .body(11).foregroundStyle(Ink.secondary).padding(.top, 8)
                     }
                 }
             }
+            HStack(spacing: 8) {
+                Image(systemName: "lock.shield")
+                Text(tr("Sur votre Mac. Sans compte. À votre rythme.", "On your Mac. No account. At your own pace."))
+                Spacer()
+                if s.stats.count > 0 { Text(tr("\(s.stats.count) dictées · \(s.stats.words) mots", "\(s.stats.count) dictations · \(s.stats.words) words")) }
+            }.body(10.5).foregroundStyle(Ink.secondary)
         }
+        .sheet(isPresented: $showPractice) { DictationPractice().environmentObject(core) }
     }
 
     private func hero(_ s: AppState) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Tag(text: tr("Dictée locale", "Local dictation"))
-            Text(tr("Parlez naturellement,\nDiktation écrit.", "Speak naturally,\nDiktation writes.")).display(34).lineSpacing(2)
-            Text(tr("Maintenez le raccourci dans n'importe quelle app, parlez, relâchez : le texte apparaît là où est votre curseur. Rien ne quitte ce Mac.", "Hold the shortcut in any app, speak, let go: the text appears where your cursor is. Nothing leaves this Mac."))
-                .body(14).foregroundStyle(Ink.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 18) {
-                gesture(chord: s.chord_label, text: tr("Maintenir pour dicter", "Hold to dictate"))
-                gesture(chord: s.chord_label + " ×2", text: tr("Mains libres", "Hands-free"))
-                gesture(chord: "esc", text: tr("Annuler", "Cancel"))
-                if s.prefs.command {
-                    gesture(chord: s.command_chord_label, text: tr("Commande", "Command"))
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            Tag(text: tr("La voix, tout simplement", "Simply your voice"))
+            VStack(alignment: .leading, spacing: -2) {
+                Text(tr("Moins de clavier.", "Less typing.")).display(43)
+                Text(tr("Plus de liberté.", "More freedom.")).font(BrandFont.text(43, weight: .bold)).tracking(-1.7).foregroundStyle(Ink.indigo)
             }
-            .padding(.top, 4)
+            Text(tr("Dictez vos idées. Gardez le fil de vos réunions.\nDiktation s’occupe des mots, vous du reste.", "Dictate your ideas. Keep track of your meetings.\nDiktation takes care of the words. You do the rest."))
+                .body(14).foregroundStyle(Ink.primary.opacity(0.8)).lineSpacing(3)
+            HStack(spacing: 10) {
+                ChordView(label: s.chord_label)
+                Text(tr("Maintenez, parlez, relâchez. C’est écrit.", "Hold, speak, release. It’s written.")).body(12, weight: .medium)
+            }.padding(.top, 8)
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            // Lavis qui glisse doucement à l'arrivée sur la page.
-            RoundedRectangle(cornerRadius: 16).fill(
-                LinearGradient(colors: [Ink.mint, Color(hex: 0xF6F4FB), Ink.lavender],
-                               startPoint: heroIn ? .topLeading : .leading,
-                               endPoint: heroIn ? .bottomTrailing : .trailing)
-            )
-        )
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Ink.hairline, lineWidth: 0.8))
+        .padding(28).frame(maxWidth: .infinity, alignment: .leading)
+        .background(AuroraBackdrop())
+        .clipShape(RoundedRectangle(cornerRadius: 26))
     }
 
-    private func gesture(chord: String, text: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ChordView(label: chord)
-            Text(text).body(11.5).foregroundStyle(Ink.secondary)
-        }
+    private func actionCard(symbol: String, title: String, detail: String, action: String, tint: Color, run: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 22, weight: .medium)).foregroundStyle(Ink.primary)
+                .frame(width: 48, height: 48).background(tint, in: RoundedRectangle(cornerRadius: 16))
+            Text(title).display(23)
+            Text(detail).body(12.5).foregroundStyle(Ink.secondary).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            Button(action: run) {
+                HStack { Text(action); Spacer(minLength: 4); Image(systemName: "arrow.right") }
+            }.buttonStyle(BlackButtonStyle()).padding(.top, 5)
+        }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 22))
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(Ink.hairline, lineWidth: 0.7))
     }
 
     @ViewBuilder
@@ -246,53 +282,6 @@ struct HomePage: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.coral.opacity(0.25), lineWidth: 0.8))
     }
 
-    private func stats(_ s: AppState) -> some View {
-        // ~40 mots/min au clavier contre ~150 à l'oral.
-        let saved = max(0, Double(s.stats.words) / 40 - s.stats.seconds / 60)
-        return HStack(spacing: 12) {
-            stat(value: "\(s.stats.count)", label: tr("dictées", "dictations"))
-            stat(value: s.stats.words.formatted(), label: tr("mots écrits à la voix", "words written by voice"))
-            stat(value: saved < 60 ? "\(Int(saved)) min" : String(format: "%.1f h", saved / 60), label: tr("gagnées sur le clavier", "saved vs. typing"))
-        }
-    }
-
-    private func stat(value: String, label: String) -> some View {
-        Card {
-            Text(value).display(28)
-                .contentTransition(.numericText())
-                .animation(.snappy(duration: 0.4), value: value)
-            Text(label).body(12).foregroundStyle(Ink.secondary).padding(.top, 2)
-        }
-    }
-
-    private func status(_ s: AppState) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: tr("État", "Status"))
-            Card(padding: 0) {
-                statusRow(ok: s.engine.ready, title: tr("Transcription", "Transcription"), detail: s.engine.status)
-                Divider().overlay(Ink.hairline)
-                statusRow(ok: s.accessibility && s.hotkey_active, title: tr("Raccourci global", "Global shortcut"),
-                          detail: s.accessibility ? (s.hotkey_active ? tr("Actif", "Active") : tr("Démarrage…", "Starting…")) : tr("Accessibilité requise", "Accessibility required"))
-                if s.prefs.rewrite || s.prefs.command {
-                    Divider().overlay(Ink.hairline)
-                    statusRow(ok: s.llm.state == "ready", title: "Apple Intelligence",
-                              detail: s.llm.state == "ready" ? tr("Prêt (style et mode commande)", "Ready (style and command mode)")
-                                  : (s.llm.state == "unknown" ? tr("Vérification…", "Checking…") : s.llm.reason))
-                }
-            }
-        }
-    }
-
-    private func statusRow(ok: Bool, title: String, detail: String) -> some View {
-        HStack(spacing: 10) {
-            StatusDot(ok: ok)
-            Text(title).body(13).foregroundStyle(Ink.primary)
-            Spacer()
-            Text(detail).body(12).foregroundStyle(Ink.secondary).lineLimit(1).truncationMode(.middle)
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-    }
 }
 
 // MARK: - Historique
@@ -375,6 +364,7 @@ struct HistoryRow: View {
     let canRetranscribe: Bool
     let copy: () -> Void
     @State private var hovered = false
+    @State private var showSpeakers = true
 
     var body: some View {
         let e = entry
@@ -384,6 +374,30 @@ struct HistoryRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(e.text.isEmpty ? tr("(vide)", "(empty)") : e.text).body(13.5).foregroundStyle(Ink.primary).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                if core.state.analysis_id == e.id || core.state.retranscribing_id == e.id {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text(core.state.analysis_id == e.id ? tr("Analyse des intervenants…", "Analyzing speakers…") : tr("Transcription…", "Transcribing…")).body(12)
+                    }
+                }
+                if !e.turns.isEmpty {
+                    DisclosureGroup(tr("Intervenants · \(Set(e.turns.map(\.speaker)).count)", "Speakers · \(Set(e.turns.map(\.speaker)).count)"), isExpanded: $showSpeakers) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(Array(e.turns.enumerated()), id: \.offset) { _, turn in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("\(turn.time) · \(turn.label)" + (turn.overlap ? tr(" · voix superposées", " · overlapping voices") : ""))
+                                        .body(11).foregroundStyle(Ink.muted)
+                                    Text(turn.text.isEmpty ? tr("Parole non transcrite", "Speech not transcribed") : turn.text)
+                                        .body(13).textSelection(.enabled)
+                                }
+                            }
+                            Button(tr("Copier avec les intervenants", "Copy with speakers")) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(e.turns.map { "[\($0.time)] \($0.label): \($0.text)" }.joined(separator: "\n\n"), forType: .string)
+                            }.buttonStyle(QuietButtonStyle())
+                        }.padding(.top, 8)
+                    }
+                }
                 Text([e.app, String(format: "%.1f s", e.seconds), "\(e.millis) ms"].filter { !$0.isEmpty }.joined(separator: " · "))
                     .body(11).foregroundStyle(Ink.muted)
             }
@@ -397,6 +411,17 @@ struct HistoryRow: View {
                 if e.has_audio && canRetranscribe {
                     Button { core.send("retranscribe", ["id": e.id]) } label: { Image(systemName: "arrow.clockwise") }
                         .help(tr("Re-transcrire depuis l'audio", "Re-transcribe from the audio"))
+                        .disabled(core.state.busy || core.state.analysis_id != nil || core.state.retranscribing_id != nil)
+                    Menu {
+                        Button(tr("Détecter automatiquement", "Detect automatically")) { core.send("analyze_speakers", ["id": e.id]) }
+                        ForEach(1...8, id: \.self) { count in
+                            Button(tr("\(count) intervenant(s)", "\(count) speaker(s)")) {
+                                core.send("analyze_speakers", ["id": e.id, "speakers": count])
+                            }
+                        }
+                    } label: { Image(systemName: "person.2.wave.2") }
+                        .help(core.state.speakers_ready ? tr("Identifier les intervenants", "Identify speakers") : tr("Installez les modèles d’intervenants dans les réglages", "Install speaker models in Settings"))
+                        .disabled(!core.state.speakers_ready || core.state.busy || core.state.analysis_id != nil || core.state.retranscribing_id != nil)
                 }
                 Button { core.send("delete", ["id": e.id]) } label: { Image(systemName: "trash") }
                     .help(tr("Supprimer", "Delete"))
@@ -824,6 +849,8 @@ struct SettingsPage: View {
         VStack(alignment: .leading, spacing: 28) {
             Text(tr("Réglages", "Settings")).display(30)
 
+            group(tr("Mises à jour", "Updates")) { UpdateSettings() }
+
             group(tr("Raccourci", "Shortcut"), subtitle: tr("Modificateurs seuls : fn, ⌃, ⌥, ⌘, ⇧, ⌥ droite, ⌘ droite.", "Modifier keys only: fn, ⌃, ⌥, ⌘, ⇧, right ⌥, right ⌘.")) {
                 ChordRecorderRow(title: tr("Dictée", "Dictation"), label: s.chord_label, recording: s.recording_chord, command: "record_chord")
             }
@@ -845,6 +872,14 @@ struct SettingsPage: View {
 
             group(tr("Modèle de transcription", "Transcription model"), subtitle: s.engine.status) {
                 ModelPicker()
+                Divider().overlay(Ink.hairline)
+                ToggleRow(title: tr("Décodage Whisper rapide", "Fast Whisper decoding"),
+                          hint: tr("Réduit l’attente, avec un compromis possible sur la précision. Sans effet sur les autres modèles.", "Reduces latency, with a possible accuracy tradeoff. Other models are unaffected."),
+                          isOn: s.prefs.fast_transcription) { core.setPref("fast_transcription", $0) }
+            }
+
+            group(tr("Intervenants", "Speakers"), subtitle: tr("Analyse locale à la demande depuis l’historique. Gardez l’audio pour l’utiliser. Les numéros sont propres à chaque enregistrement ; les voix superposées peuvent être imprécises.", "Local analysis on demand from History. Keep audio to use it. Numbers belong to each recording; overlapping speech can be inaccurate.")) {
+                SpeakerModelsView()
             }
 
             group(tr("Texte", "Text")) {

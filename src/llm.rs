@@ -74,7 +74,7 @@ impl Llm {
     /// (quelques ms) : hors du fil principal.
     pub fn start(&self) {
         let mut slot = self.helper.lock().unwrap();
-        match self.ensure(&mut slot) {
+        match self.ensure(&mut slot, Duration::from_secs(5)) {
             // Charge le modèle tout de suite : la première dictée ne paie
             // pas son chargement.
             Ok(()) => {
@@ -92,7 +92,7 @@ impl Llm {
         self.set_status(Status::Unknown);
     }
 
-    fn ensure(&self, slot: &mut Option<Helper>) -> Result<()> {
+    fn ensure(&self, slot: &mut Option<Helper>, timeout: Duration) -> Result<()> {
         if let Some(h) = slot.as_mut()
             && matches!(h.child.try_wait(), Ok(None))
         {
@@ -126,7 +126,7 @@ impl Llm {
         })?;
         let mut helper = Helper { child, stdin, rx };
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let reply = match call(&mut helper, id, json!({"id": id, "op": "status"}), Duration::from_secs(5)) {
+        let reply = match call(&mut helper, id, json!({"id": id, "op": "status"}), timeout.min(Duration::from_secs(5))) {
             Ok(r) => r,
             Err(e) => {
                 self.set_status(Status::Unavailable(format!("outil diktation-llm : {e}")));
@@ -155,12 +155,15 @@ impl Llm {
 
     /// Une réponse du modèle, ou une erreur après `timeout`.
     pub fn respond(&self, instructions: &str, prompt: &str, max_tokens: usize, timeout: Duration) -> Result<String> {
-        let mut slot = self.helper.lock().unwrap();
-        self.ensure(&mut slot)?;
+        let deadline = Instant::now() + timeout;
+        let mut slot = lock_until(&self.helper, deadline)?;
+        self.ensure(&mut slot, deadline.saturating_duration_since(Instant::now()))?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() { bail!(crate::i18n::tr("le modèle n'a pas répondu à temps", "the model did not answer in time")); }
         let helper = slot.as_mut().expect("outil lancé");
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let req = json!({"id": id, "op": "respond", "instructions": instructions, "prompt": prompt, "max_tokens": max_tokens});
-        match call(helper, id, req, timeout) {
+        match call(helper, id, req, remaining) {
             Ok(reply) => match (reply["text"].as_str(), reply["error"].as_str()) {
                 (Some(text), _) => Ok(text.to_string()),
                 (_, Some(err)) => bail!("{err}"),
@@ -197,5 +200,30 @@ fn call(h: &mut Helper, id: u64, req: Value, timeout: Duration) -> Result<Value>
             Err(RecvTimeoutError::Timeout) => bail!(crate::i18n::tr("le modèle n'a pas répondu à temps", "the model did not answer in time")),
             Err(RecvTimeoutError::Disconnected) => bail!(crate::i18n::tr("l'outil diktation-llm s'est arrêté", "the diktation-llm helper stopped")),
         }
+    }
+}
+
+/// Queueing and helper startup belong to the same user-visible latency budget.
+fn lock_until<T>(mutex: &Mutex<T>, deadline: Instant) -> Result<std::sync::MutexGuard<'_, T>> {
+    loop {
+        if Instant::now() >= deadline { bail!("model busy: response deadline exceeded"); }
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) => bail!("model worker unavailable"),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn busy_helper_cannot_exceed_queue_deadline() {
+        let mutex = Mutex::new(());
+        let _held = mutex.lock().unwrap();
+        assert!(lock_until(&mutex, Instant::now() + Duration::from_millis(10)).is_err());
     }
 }

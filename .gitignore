@@ -2,3 +2,6 @@ target/
 Diktation.app/
 assets/AppIcon.iconset/
 dist/
+
+.DS_Store
+__pycache__/

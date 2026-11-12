@@ -59,7 +59,7 @@ func unavailableReason() -> String? {
 }
 
 func describe(_ error: Error) -> String {
-    if let e = error as? LanguageModelError {
+    if #available(macOS 27.0, *), let e = error as? LanguageModelError {
         switch e {
         case .contextSizeExceeded: return tr("texte trop long pour le modèle", "text too long for the model")
         case .guardrailViolation: return tr("refusé par les garde-fous d'Apple", "blocked by Apple's guardrails")
@@ -100,6 +100,7 @@ func handle(_ req: Request) async {
     case "prewarm":
         guard unavailableReason() == nil else { return }
         let instructions = req.instructions ?? ""
+        if warm?.instructions == instructions { return }
         let session = LanguageModelSession(model: model, instructions: instructions)
         session.prewarm()
         warm = (instructions, session)

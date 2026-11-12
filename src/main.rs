@@ -17,11 +17,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("--transcribe") if args.len() >= 3 => cli_transcribe(&args[2], args.get(3).map(String::as_str)),
+        Some("--benchmark") if args.len() >= 3 => cli_benchmark(&args[2], args.get(3).map(String::as_str)),
+        Some("--diarize") if args.len() >= 3 => cli_diarize(&args[2], args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0), args.get(4).map(String::as_str), args.get(5).map(String::as_str)),
         Some("--rewrite") if args.len() >= 4 => cli_rewrite(&args[2], &args[3], args.get(4).map(String::as_str)),
         Some("--command") if args.len() >= 3 => cli_command(&args[2], args.get(3).map(String::as_str)),
         Some("--selection") => cli_selection(),
         _ => eprintln!(
-            "usage : diktation --transcribe f.wav | --rewrite <bundle id> \"texte\" [titre] | --command \"consigne\" [sélection] | --selection"
+            "usage : diktation --transcribe f.wav [model] | --benchmark f.wav [model] | --diarize f.wav [count=0] [model] [speaker-model-dir] | --rewrite <bundle id> \"texte\" [titre] | --command \"consigne\" [sélection] | --selection"
         ),
     }
 }
@@ -35,7 +37,7 @@ fn cli_transcribe(path: &str, model: Option<&str>) {
     eprintln!("modèle chargé en {:?}", t.elapsed());
     let samples = audio::load_wav(std::path::Path::new(path)).expect("wav");
     let out = eng
-        .transcribe(&samples, &prefs.language, &engine::build_prompt(&prefs.dictionary, &prefs.language))
+        .transcribe_with_options(&samples, &prefs.language, &engine::build_prompt(&prefs.dictionary, &prefs.language), prefs.fast_transcription)
         .expect("transcription");
     println!("[{} ms] brut : {}", out.millis, out.text);
     println!("final : {}", text::process(&out.text, &prefs));
@@ -80,4 +82,37 @@ fn cli_selection() {
     let title = macos::front_window_title();
     println!("{selection:?} (lue en {} ms, Accessibilité ensuite : {how})", t.elapsed().as_millis());
     println!("fenêtre {title:?} → {}", assist::category_in(&bundle_id, title.as_deref()).label());
+}
+
+/// Repeated inference in one process measures the path used by the app.
+fn cli_benchmark(path: &str, model: Option<&str>) {
+    let prefs = Prefs::load();
+    let model = engine::resolve_model(model.unwrap_or(&prefs.model)).expect("model");
+    let samples = audio::load_wav(std::path::Path::new(path)).expect("wav");
+    let started = Instant::now();
+    let eng = Engine::load(&model).expect("loading model");
+    eprintln!("load_ms={}", started.elapsed().as_millis());
+    let prompt = engine::build_prompt(&prefs.dictionary, &prefs.language);
+    for fast in [false, true] {
+        for run in 0..4 {
+            let out = eng.transcribe_with_options(&samples, &prefs.language, &prompt, fast).expect("transcription");
+            println!("{}", serde_json::json!({"fast":fast,"run":run,"millis":out.millis,
+                "audio_seconds":samples.len() as f64 / engine::SAMPLE_RATE as f64,"text":out.text}));
+        }
+    }
+}
+
+fn cli_diarize(path: &str, count: usize, model: Option<&str>, dir: Option<&str>) {
+    let mut prefs = Prefs::load();
+    // Diarization recordings can contain multiple languages.
+    prefs.language = "auto".into();
+    let model = engine::resolve_model(model.unwrap_or(&prefs.model)).expect("model");
+    let eng = Engine::load(&model).expect("loading model");
+    let dir = dir.map(std::path::PathBuf::from).unwrap_or_else(engine::install_dir);
+    let diarizer = diktation::speakers::Diarizer::load(&dir).expect("speaker models");
+    let samples = audio::load_wav(std::path::Path::new(path)).expect("wav");
+    let started = Instant::now();
+    let turns = diarizer.analyze(&samples, &eng, &prefs, count).expect("speaker analysis");
+    eprintln!("analysis_ms={}", started.elapsed().as_millis());
+    println!("{}", serde_json::to_string_pretty(&turns).unwrap());
 }

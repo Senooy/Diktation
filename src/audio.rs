@@ -105,6 +105,27 @@ pub fn start() {
     send(Cmd::Arm { at: Instant::now(), press: false });
 }
 
+/// Meetings start at the button press, without dictation pre-roll.
+pub fn start_fresh() {
+    let Some(m) = MIC.get() else { return };
+    {
+        let mut b = m.buf.lock().unwrap();
+        b.samples.clear();
+        b.capturing = true;
+        m.preroll.store(0, Ordering::Relaxed);
+    }
+    *m.error.lock().unwrap() = None;
+    send(Cmd::Arm { at: Instant::now(), press: false });
+}
+
+/// Copy only the next complete preview window, never the whole recording.
+pub fn recording_chunk(offset: usize, count: usize) -> Option<Vec<f32>> {
+    let m = MIC.get()?;
+    let b = m.buf.lock().unwrap();
+    if !b.capturing { return None; }
+    b.samples.get(offset..offset.checked_add(count)?).map(<[f32]>::to_vec)
+}
+
 /// Fin de la dictée : rend l'audio. Le flux reste actif `linger`, puis
 /// repasse en pause.
 pub fn finish(linger: Duration) -> Vec<f32> {
@@ -304,9 +325,10 @@ fn build(mic: &Arc<Mic>) -> Result<Open> {
         m.level.store(meter.push(rms).to_bits(), Ordering::Relaxed);
     };
     let m = mic.clone();
-    let err = move |e| {
+    let err = move |e: cpal::StreamError| {
         eprintln!("diktation: micro : {e}");
         m.broken.store(true, Ordering::SeqCst);
+        *m.error.lock().unwrap() = Some(e.to_string());
     };
 
     let stream = match format {
@@ -397,28 +419,60 @@ impl Meter {
     }
 }
 
-/// Rééchantillonnage linéaire, suffisant pour de la voix vers 16 kHz.
+/// Streaming resampler. A low-pass FIR prevents frequencies above 8 kHz from
+/// folding into the speech band when a 44.1/48/96 kHz microphone is downsampled.
 struct Resampler {
     step: f64,
     pos: f64,
-    prev: f32,
+    prev: Option<f32>,
+    taps: Vec<f32>,
+    history: Vec<f32>,
+    cursor: usize,
 }
 
 impl Resampler {
     fn new(from: u32, to: u32) -> Self {
-        Self { step: from as f64 / to as f64, pos: 0.0, prev: 0.0 }
+        assert!(from > 0 && to > 0);
+        let taps = if from > to {
+            let len = 63;
+            let cutoff = 0.45 * to as f64 / from as f64;
+            let mut taps: Vec<f32> = (0..len).map(|i| {
+                let x = i as f64 - (len - 1) as f64 / 2.0;
+                let sinc = if x == 0.0 { 2.0 * cutoff } else {
+                    (2.0 * std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
+                };
+                let window = 0.54 - 0.46 * (2.0 * std::f64::consts::PI * i as f64 / (len - 1) as f64).cos();
+                (sinc * window) as f32
+            }).collect();
+            let sum: f32 = taps.iter().sum();
+            for tap in &mut taps { *tap /= sum; }
+            taps
+        } else { Vec::new() };
+        Self { step: from as f64 / to as f64, pos: 0.0, prev: None,
+            history: vec![0.0; taps.len()], taps, cursor: 0 }
     }
 
-    fn push(&mut self, x: f32, out: &mut Vec<f32>) {
-        // `pos` = position (en échantillons d'entrée) du prochain échantillon
-        // de sortie, relative à `prev`.
+    fn push(&mut self, mut x: f32, out: &mut Vec<f32>) {
+        if self.step == 1.0 { out.push(x); return; }
+        if !self.taps.is_empty() {
+            self.history[self.cursor] = x;
+            x = self.taps.iter().enumerate().map(|(i, tap)| {
+                tap * self.history[(self.cursor + self.history.len() - i) % self.history.len()]
+            }).sum();
+            self.cursor = (self.cursor + 1) % self.history.len();
+        }
+        let Some(prev) = self.prev else {
+            self.prev = Some(x);
+            out.push(x);
+            self.pos = self.step;
+            return;
+        };
         while self.pos <= 1.0 {
-            let t = self.pos as f32;
-            out.push(self.prev + (x - self.prev) * t);
+            out.push(prev + (x - prev) * self.pos as f32);
             self.pos += self.step;
         }
         self.pos -= 1.0;
-        self.prev = x;
+        self.prev = Some(x);
     }
 }
 
@@ -435,11 +489,17 @@ pub fn save_wav(path: &std::path::Path, samples: &[f32]) -> Result<()> {
 pub fn load_wav(path: &std::path::Path) -> Result<Vec<f32>> {
     let mut r = hound::WavReader::open(path)?;
     let spec = r.spec();
+    anyhow::ensure!(spec.channels > 0 && spec.sample_rate > 0, "invalid WAV format");
     let ch = spec.channels as usize;
     let raw: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int => r.samples::<i16>().map(|s| s.map(|v| v as f32 / 32768.0)).collect::<Result<_, _>>()?,
+        hound::SampleFormat::Int => {
+            anyhow::ensure!((1..=32).contains(&spec.bits_per_sample), "unsupported PCM bit depth");
+            let scale = 2.0f32.powi(spec.bits_per_sample as i32 - 1);
+            r.samples::<i32>().map(|s| s.map(|v| v as f32 / scale)).collect::<Result<_, _>>()?
+        },
         hound::SampleFormat::Float => r.samples::<f32>().collect::<Result<_, _>>()?,
     };
+    anyhow::ensure!(raw.len().is_multiple_of(ch) && raw.iter().all(|x| x.is_finite()), "invalid WAV samples");
     let mono: Vec<f32> = raw.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect();
     if spec.sample_rate == SAMPLE_RATE {
         return Ok(mono);
@@ -450,4 +510,52 @@ pub fn load_wav(path: &std::path::Path) -> Result<Vec<f32>> {
         rs.push(x, &mut out);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resampling_keeps_length_and_identity() {
+        let mut same = Resampler::new(16_000, 16_000);
+        let mut out = Vec::new();
+        for x in [0.2, 0.8, -0.4, 0.0] { same.push(x, &mut out); }
+        assert_eq!(out, vec![0.2, 0.8, -0.4, 0.0]);
+        for rate in [44_100, 48_000, 96_000] {
+            let mut rs = Resampler::new(rate, 16_000);
+            out.clear();
+            for _ in 0..rate { rs.push(0.5, &mut out); }
+            assert!((out.len() as i64 - 16_000).abs() <= 1);
+            assert!((out[100] - 0.5).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn wav_pcm_depths_and_stereo_downmix() {
+        for bits in [8, 16, 24, 32] {
+            let path = std::env::temp_dir().join(format!("diktation-pcm-{}-{bits}.wav", std::process::id()));
+            let spec = hound::WavSpec { channels: 2, sample_rate: 16_000, bits_per_sample: bits, sample_format: hound::SampleFormat::Int };
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            let value = 1i32 << (bits - 2);
+            for _ in 0..100 { writer.write_sample(value).unwrap(); writer.write_sample(0i32).unwrap(); }
+            writer.finalize().unwrap();
+            let samples = load_wav(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(samples.len(), 100);
+            assert!(samples.iter().all(|s| (*s - 0.25).abs() < 1e-6));
+        }
+    }
+
+    #[test]
+    fn downsampling_rejects_aliases() {
+        fn rms(frequency: f32) -> f32 {
+            let mut rs = Resampler::new(48_000, 16_000);
+            let mut out = Vec::new();
+            for i in 0..48_000 { rs.push((i as f32 * frequency * std::f32::consts::TAU / 48_000.).sin(), &mut out); }
+            (out[100..].iter().map(|x| x*x).sum::<f32>() / (out.len()-100) as f32).sqrt()
+        }
+        assert!(rms(1_000.) > 0.65);
+        assert!(rms(12_000.) < 0.01);
+    }
 }

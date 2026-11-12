@@ -11,7 +11,7 @@
 //! (relire l'état) et `pill` (pastille à afficher, au rythme des tours).
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ use crate::hotkey::{self, Event};
 use crate::prefs::{self, Prefs};
 use crate::store::{self, Entry, Store};
 use crate::i18n::{is_french, tr};
-use crate::{assist, audio, llm, macos, text};
+use crate::{assist, audio, llm, macos, text, speakers};
 
 /// Rythme pendant l'écoute, la transcription ou avec la pastille affichée.
 const TICK: Duration = Duration::from_millis(33);
@@ -102,18 +102,24 @@ enum Assist {
 
 /// Résultats des fils de travail.
 enum Msg {
-    EngineLoaded { result: Result<(Arc<Engine>, Duration)>, name: String },
-    Transcribed { result: Result<(String, String, u128)>, samples: Vec<f32>, seconds: f32, app: String },
-    Retranscribed { id: i64, result: Result<(String, String, u128)> },
+    EngineLoaded { generation: u64, result: Result<(Arc<Engine>, Duration)>, name: String },
+    Transcribed { result: Result<(String, String, u128)>, audio: Option<PathBuf>, seconds: f32, app: String },
+    Retranscribed { id: i64, audio: PathBuf, result: Result<(String, String, u128)> },
+    Speakers { id: i64, audio: PathBuf, result: Result<Vec<speakers::Turn>> },
     Changed,
 }
 
 pub struct Core {
     prefs: Prefs,
+    meetings: crate::meetings::Controller,
     store: Option<Store>,
     engine: Option<Arc<Engine>>,
     engine_status: String,
     engine_failed: bool,
+    engine_generation: Arc<AtomicU64>,
+    analysis_id: Option<i64>,
+    retranscribing_id: Option<i64>,
+    diarizer: Arc<Mutex<Option<speakers::Diarizer>>>,
     phase: Phase,
     pill: Pill,
     pill_close_at: Option<Instant>,
@@ -171,10 +177,15 @@ impl Core {
 
         let mut core = Self {
             prefs,
+            meetings: crate::meetings::Controller::new(),
             store,
             engine: None,
             engine_status: tr("Chargement du modèle…", "Loading model…").into(),
             engine_failed: false,
+            engine_generation: Arc::new(AtomicU64::new(0)),
+            analysis_id: None,
+            retranscribing_id: None,
+            diarizer: Arc::new(Mutex::new(None)),
             phase: Phase::Idle,
             pill: Pill::default(),
             pill_close_at: None,
@@ -205,21 +216,29 @@ impl Core {
     }
 
     fn load_engine(&mut self) {
+        let generation = self.engine_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let latest = self.engine_generation.clone();
         self.engine = None;
         self.engine_failed = false;
         self.dirty = true;
         let Some(model) = engine::resolve_model(&self.prefs.model) else {
             self.engine_failed = true;
             self.engine_status = tr("Aucun modèle de transcription installé", "No transcription model installed").into();
+            if let Some((_, seconds, app, _)) = self.waiting.take() {
+                self.finish(Err(anyhow::anyhow!(self.engine_status.clone())), None, seconds, app);
+            }
             return;
         };
         let name = model.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.engine_status = if is_french() { format!("Chargement de {name}…") } else { format!("Loading {name}…") };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            static LOAD: Mutex<()> = Mutex::new(());
+            let _load = LOAD.lock().unwrap();
+            if latest.load(Ordering::SeqCst) != generation { return; }
             let t = Instant::now();
             let result = Engine::load(&model).map(|e| (Arc::new(e), t.elapsed()));
-            let _ = tx.send(Msg::EngineLoaded { result, name });
+            let _ = tx.send(Msg::EngineLoaded { generation, result, name });
             wake();
         });
     }
@@ -228,6 +247,7 @@ impl Core {
 
     /// Un tour : événements clavier, résultats des fils, pastille.
     fn tick(&mut self) {
+        if self.meetings.tick() { self.dirty = true; }
         while let Ok(msg) = self.rx.try_recv() {
             self.on_msg(msg);
         }
@@ -305,7 +325,8 @@ impl Core {
     /// Écoute, transcription, pastille ou enregistreur de raccourci : la
     /// boucle tourne à 30 Hz ; sinon elle dort.
     fn needs_fast_tick(&self) -> bool {
-        !matches!(self.phase, Phase::Idle)
+        self.meetings.recording()
+            || !matches!(self.phase, Phase::Idle)
             || self.pill.visible
             || self.pill_close_at.is_some()
             || self.recording_chord
@@ -315,7 +336,8 @@ impl Core {
     fn on_msg(&mut self, msg: Msg) {
         self.dirty = true;
         match msg {
-            Msg::EngineLoaded { result, name } => match result {
+            Msg::EngineLoaded { generation, .. } if generation != self.engine_generation.load(Ordering::SeqCst) => {}
+            Msg::EngineLoaded { result, name, .. } => match result {
                 Ok((engine, took)) => {
                     self.engine_status = if is_french() {
                         format!("{name} prêt (chargé en {:.1} s)", took.as_secs_f32())
@@ -330,26 +352,44 @@ impl Core {
                 Err(e) => {
                     self.engine_failed = true;
                     self.engine_status = format!("{} : {e}", tr("Erreur du modèle", "Model error"));
-                    if let Some((samples, seconds, app, _)) = self.waiting.take() {
-                        self.finish(Err(anyhow::anyhow!(tr("modèle de transcription indisponible", "transcription model unavailable"))), samples, seconds, app);
+                    if let Some((_samples, seconds, app, _)) = self.waiting.take() {
+                        self.finish(Err(anyhow::anyhow!(tr("modèle de transcription indisponible", "transcription model unavailable"))), None, seconds, app);
                     }
                 }
             },
-            Msg::Transcribed { result, samples, seconds, app } => self.finish(result, samples, seconds, app),
-            Msg::Retranscribed { id, result } => match result {
-                Ok((text, raw, millis)) => {
-                    if let Some(s) = &self.store {
-                        let _ = s.update_text(id, &text, &raw, millis as i64);
+            Msg::Transcribed { result, audio, seconds, app } => self.finish(result, audio, seconds, app),
+            Msg::Retranscribed { id, audio, result } => {
+                self.retranscribing_id = None;
+                match result {
+                    Ok((text, raw, millis)) => {
+                        if let Some(s) = &self.store
+                            && let Err(e) = s.update_text(id, &text, &raw, millis as i64, &audio) {
+                            self.last_error = Some(e.to_string());
+                        }
+                        self.refresh_history();
                     }
-                    self.refresh_history();
+                    Err(e) => self.last_error = Some(format!("{} : {e}", tr("Re-transcription", "Re-transcription"))),
                 }
-                Err(e) => self.last_error = Some(format!("{} : {e}", tr("Re-transcription", "Re-transcription"))),
-            },
+            }
+            Msg::Speakers { id, audio, result } => {
+                self.analysis_id = None;
+                match result {
+                    Ok(turns) => {
+                        if let Some(store) = &self.store
+                            && let Err(e) = store.update_turns(id, &turns, &audio) {
+                            self.last_error = Some(e.to_string());
+                        }
+                        self.refresh_history();
+                    }
+                    Err(e) => self.last_error = Some(format!("{} : {e}", tr("Intervenants", "Speakers"))),
+                }
+            }
             Msg::Changed => {}
         }
     }
 
     fn on_event(&mut self, event: Event) {
+        if self.meetings.busy() { return; }
         match event {
             Event::Press => match &self.phase {
                 Phase::Idle => self.begin(false),
@@ -549,7 +589,7 @@ impl Core {
         if self.engine.is_some() {
             self.spawn_transcription(samples, seconds, app, assist);
         } else if self.engine_failed {
-            self.finish(Err(anyhow::anyhow!(tr("modèle de transcription indisponible", "transcription model unavailable"))), samples, seconds, app);
+            self.finish(Err(anyhow::anyhow!(tr("modèle de transcription indisponible", "transcription model unavailable"))), None, seconds, app);
         } else {
             // Le modèle charge encore (juste après le lancement).
             self.waiting = Some((samples, seconds, app, assist));
@@ -570,9 +610,10 @@ impl Core {
             if command {
                 prompt = format!("{prompt} {}", assist::COMMAND_PROMPT).trim().to_string();
             }
-            let result = engine.transcribe(&samples, &prefs.language, &prompt).and_then(|o| {
+            let result = engine.transcribe_with_options(&samples, &prefs.language, &prompt, prefs.fast_transcription).and_then(|o| {
                 let mut text = text::process(&o.text, &prefs);
                 let mut raw = o.text;
+                if text.is_empty() { return Ok((text, raw, started.elapsed().as_millis())); }
                 match assist {
                     Assist::None => {}
                     Assist::Rewrite { llm, instructions } => {
@@ -592,12 +633,15 @@ impl Core {
                 }
                 Ok((text, raw, millis))
             });
-            let _ = tx.send(Msg::Transcribed { result, samples, seconds, app });
+            let audio = if prefs.keep_audio && !command && result.as_ref().is_ok_and(|(text, _, _)| !text.is_empty()) {
+                save_audio(&samples)
+            } else { None };
+            let _ = tx.send(Msg::Transcribed { result, audio, seconds, app });
             wake();
         });
     }
 
-    fn finish(&mut self, result: Result<(String, String, u128)>, samples: Vec<f32>, seconds: f32, app: String) {
+    fn finish(&mut self, result: Result<(String, String, u128)>, audio: Option<PathBuf>, seconds: f32, app: String) {
         self.phase = Phase::Idle;
         self.dirty = true;
         match result {
@@ -610,8 +654,11 @@ impl Core {
                 if text.is_empty() {
                     return;
                 }
-                // L'audio d'une consigne ne se re-transcrit pas en texte.
-                let audio = (self.prefs.keep_audio && !self.command_mode).then(|| save_audio(&samples)).flatten();
+                // Respect a privacy change made while inference was running.
+                let audio = if self.prefs.keep_audio { audio } else {
+                    if let Some(path) = audio { let _ = std::fs::remove_file(path); }
+                    None
+                };
                 if let Some(store) = &self.store {
                     let _ = store.add(&text, &raw, &app, seconds, millis as i64, audio.as_ref());
                     if self.prefs.auto_delete {
@@ -650,18 +697,49 @@ impl Core {
     }
 
     fn retranscribe(&mut self, id: i64) {
+        if self.retranscribing_id.is_some() || self.analysis_id.is_some() || !matches!(self.phase, Phase::Idle) { return; }
         let Some(entry) = self.history.iter().find(|e| e.id == id) else { return };
         let (Some(engine), Some(path)) = (self.engine.clone(), entry.audio.clone()) else { return };
+        self.retranscribing_id = Some(id);
+        self.dirty = true;
         let prefs = self.prefs.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = (|| {
                 let samples = audio::load_wav(&path)?;
                 let prompt = engine::build_prompt(&prefs.dictionary, &prefs.language);
-                let out = engine.transcribe(&samples, &prefs.language, &prompt)?;
+                let out = engine.transcribe_with_options(&samples, &prefs.language, &prompt, prefs.fast_transcription)?;
                 Ok((text::process(&out.text, &prefs), out.text, out.millis))
             })();
-            let _ = tx.send(Msg::Retranscribed { id, result });
+            let _ = tx.send(Msg::Retranscribed { id, audio: path, result });
+            wake();
+        });
+    }
+
+    fn analyze_speakers(&mut self, id: i64, count: usize) {
+        if self.analysis_id.is_some() || self.retranscribing_id.is_some() || !matches!(self.phase, Phase::Idle) { return; }
+        if !speakers::installed() {
+            self.last_error = Some(tr("Téléchargez les deux modèles d’intervenants dans les réglages.",
+                "Download both speaker models in Settings.").into());
+            self.dirty = true;
+            return;
+        }
+        let Some(entry) = self.history.iter().find(|e| e.id == id) else { return };
+        let (Some(engine), Some(path)) = (self.engine.clone(), entry.audio.clone()) else { return };
+        self.analysis_id = Some(id);
+        self.last_error = None;
+        self.dirty = true;
+        let prefs = self.prefs.clone();
+        let diarizer = self.diarizer.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let samples = audio::load_wav(&path)?;
+                let mut slot = diarizer.lock().map_err(|_| anyhow::anyhow!("speaker engine unavailable"))?;
+                if slot.is_none() { *slot = Some(speakers::Diarizer::load(&engine::install_dir())?); }
+                slot.as_ref().unwrap().analyze(&samples, &engine, &prefs, count)
+            })();
+            let _ = tx.send(Msg::Speakers { id, audio: path, result });
             wake();
         });
     }
@@ -711,6 +789,9 @@ impl Core {
 
     /// Commande de l'interface : `{"cmd": "...", ...}`.
     pub fn command(&mut self, v: &Value) {
+        let available = matches!(self.phase, Phase::Idle) && self.analysis_id.is_none() && self.retranscribing_id.is_none();
+        if self.meetings.command(v, self.engine.clone(), &self.prefs, available) { self.dirty = true; return; }
+        if self.meetings.busy() && matches!(v["cmd"].as_str(), Some("retranscribe" | "analyze_speakers" | "reload_model")) { return; }
         let id = v.get("id").and_then(Value::as_i64);
         let on = v.get("on").and_then(Value::as_bool).unwrap_or(false);
         match v.get("cmd").and_then(Value::as_str).unwrap_or("") {
@@ -736,6 +817,10 @@ impl Core {
                     self.retranscribe(id)
                 }
             }
+            "analyze_speakers" => {
+                if let Some(id) = id { self.analyze_speakers(id, v["speakers"].as_u64().unwrap_or(0).min(20) as usize); }
+            }
+            "refresh_models" => { self.dirty = true; }
             "paste_last" => self.paste_last(),
             "record_chord" => self.set_recording(on, false),
             "record_command" => self.set_recording(on, true),
@@ -801,12 +886,13 @@ impl Core {
             .map(|e| {
                 json!({
                     "id": e.id, "at": e.at, "text": e.text, "app": e.app, "seconds": e.seconds,
-                    "millis": e.millis, "has_audio": e.audio.as_ref().is_some_and(|p| p.exists()),
+                    "millis": e.millis, "turns": e.turns, "has_audio": e.audio.as_ref().is_some_and(|p| p.exists()),
                 })
             })
             .collect();
         let state = json!({
             "prefs": self.prefs,
+            "meetings": self.meetings.state(),
             "chord_label": self.prefs.chord.label(),
             "command_chord_label": self.prefs.command_chord.label(),
             "history": history,
@@ -819,9 +905,13 @@ impl Core {
             "recording_chord": self.recording_chord,
             "recording_command": self.recording_command,
             "last_error": self.last_error,
-            "busy": !matches!(self.phase, Phase::Idle),
+            "busy": self.meetings.busy() || !matches!(self.phase, Phase::Idle),
             "models": models,
             "catalog": catalog,
+            "speaker_models": speakers::catalog(),
+            "speakers_ready": speakers::installed(),
+            "analysis_id": self.analysis_id,
+            "retranscribing_id": self.retranscribing_id,
             "install_dir": engine::install_dir().display().to_string(),
             "audio_started": self.audio_started,
             "microphones": self.mics.0,

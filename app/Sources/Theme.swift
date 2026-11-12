@@ -1,20 +1,21 @@
-// Style : blanc chaud, encre presque noire, boutons noirs, étiquettes indigo,
-// lavis lavande.
+// Fond crème, encre prune, lavis lilas grainé et typographie géométrique.
 
 import SwiftUI
+import CoreText
+import AppKit
 
 enum Ink {
-    static let paper = Color(hex: 0xFFFFFF)
-    static let canvas = Color(hex: 0xFAF8F5)
-    static let primary = Color(hex: 0x25221D)
-    static let secondary = Color(red: 11 / 255, green: 10 / 255, blue: 9 / 255).opacity(0.6)
-    static let muted = Color(red: 11 / 255, green: 10 / 255, blue: 9 / 255).opacity(0.4)
-    static let hairline = Color(red: 11 / 255, green: 10 / 255, blue: 9 / 255).opacity(0.1)
-    static let wash = Color(red: 11 / 255, green: 10 / 255, blue: 9 / 255).opacity(0.04)
-    static let indigo = Color(hex: 0x463FA6)
-    static let coral = Color(hex: 0xF55D48)
-    static let fresh = Color(hex: 0x2FA866)
-    static let lavender = Color(hex: 0xE9E6FB)
+    static let paper = Color(hex: 0xFFFDF5)
+    static let canvas = Color(hex: 0xF6F1EB)
+    static let primary = Color(hex: 0x25041D)
+    static let secondary = Color(hex: 0x70636C)
+    static let muted = Color(hex: 0x766872)
+    static let hairline = Color(hex: 0x25041D).opacity(0.10)
+    static let wash = Color(hex: 0x25041D).opacity(0.045)
+    static let indigo = Color(hex: 0x872168)
+    static let coral = Color(hex: 0xBA493C)
+    static let fresh = Color(hex: 0x287456)
+    static let lavender = Color(hex: 0xEAE0FA)
     static let mint = Color(hex: 0xEAF4EC)
 }
 
@@ -30,39 +31,41 @@ extension Color {
 
 extension View {
     func display(_ size: CGFloat = 32) -> some View {
-        font(.system(size: size, weight: .regular)).tracking(-size * 0.02).foregroundStyle(Ink.primary)
+        font(BrandFont.text(size, weight: .bold)).tracking(-size * 0.04).foregroundStyle(Ink.primary)
     }
 
     func body(_ size: CGFloat = 13.5, weight: Font.Weight = .regular) -> some View {
-        font(.system(size: size, weight: weight)).tracking(-0.2)
+        font(BrandFont.text(size, weight: weight)).tracking(-0.15)
     }
 }
 
 // MARK: - Composants
 
-/// Petite étiquette en capitales, cadre indigo.
+/// Repère discret sur fond lilas.
 struct Tag: View {
     let text: String
     var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: 9.5, weight: .semibold))
-            .tracking(0.6)
+        Text(text)
+            .font(BrandFont.text(11, weight: .semibold))
+            .tracking(0.1)
             .foregroundStyle(Ink.indigo)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(Ink.indigo.opacity(0.55), lineWidth: 0.8))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Ink.lavender.opacity(0.7)))
     }
 }
 
 struct BlackButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         HoverBox { hovered in
             configuration.label
-                .font(.system(size: 12.5, weight: .medium))
+                .font(BrandFont.text(13, weight: .semibold))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Ink.primary.opacity(hovered ? 0.86 : 1)))
+                .padding(.horizontal, 18)
+                .frame(height: 38)
+                .background(Capsule().fill(Ink.primary.opacity(hovered ? 0.88 : 1)))
+                .opacity(isEnabled ? 1 : 0.42)
                 .contentShape(Rectangle())
         }
         .pressable(configuration.isPressed)
@@ -70,16 +73,18 @@ struct BlackButtonStyle: ButtonStyle {
 }
 
 struct QuietButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     var destructive = false
     func makeBody(configuration: Configuration) -> some View {
         HoverBox { hovered in
             configuration.label
-                .font(.system(size: 12, weight: .medium))
+                .font(BrandFont.text(12, weight: .semibold))
                 .foregroundStyle(destructive ? Ink.coral : Ink.primary)
                 .padding(.horizontal, 10)
-                .frame(height: 26)
-                .background(RoundedRectangle(cornerRadius: 5).fill(hovered ? Ink.hairline : Ink.wash))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Ink.hairline, lineWidth: 0.6))
+                .frame(height: 32)
+                .background(Capsule().fill(hovered ? Ink.hairline : Ink.wash))
+                .overlay(Capsule().stroke(Ink.hairline, lineWidth: 0.6))
+                .opacity(isEnabled ? 1 : 0.42)
                 .contentShape(Rectangle())
         }
         .pressable(configuration.isPressed)
@@ -99,8 +104,7 @@ struct HoverBox<Content: View>: View {
 extension View {
     /// Léger enfoncement à ressort quand on clique.
     func pressable(_ pressed: Bool) -> some View {
-        scaleEffect(pressed ? 0.95 : 1)
-            .animation(.spring(response: 0.22, dampingFraction: 0.55), value: pressed)
+        modifier(PressFeedback(pressed: pressed))
     }
 }
 
@@ -112,8 +116,8 @@ struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) { content }
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Ink.paper))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Ink.hairline, lineWidth: 0.8))
+            .background(RoundedRectangle(cornerRadius: 20).fill(Color.white.opacity(0.78)))
+            .overlay(RoundedRectangle(cornerRadius: 20).stroke(Ink.hairline, lineWidth: 0.8))
     }
 }
 
@@ -297,5 +301,53 @@ struct FlowLayout: Layout {
             x += s.width + spacing
             row = max(row, s.height)
         }
+    }
+}
+
+
+/// Font and artwork are bundled: no network request during app use.
+enum BrandFont {
+    private static let registered: Void = {
+        if let url = Bundle.main.url(forResource: "Manrope", withExtension: "ttf", subdirectory: "Fonts") {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+    }()
+    static func text(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        _ = registered
+        return .custom("Manrope", size: size).weight(weight)
+    }
+}
+
+struct AuroraBackdrop: View {
+    private static let artwork: NSImage? = Bundle.main.url(forResource: "Aurora", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
+    var body: some View {
+        GeometryReader { geometry in
+            if let artwork = Self.artwork {
+                Image(nsImage: artwork).resizable().scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+            } else { Ink.lavender }
+        }.allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+struct BrandGlyph: View {
+    var size: CGFloat = 40
+    var body: some View {
+        Image(systemName: "waveform")
+            .font(.system(size: size * 0.45, weight: .semibold))
+            .foregroundStyle(Ink.paper)
+            .frame(width: size, height: size)
+            .background(Ink.primary, in: RoundedRectangle(cornerRadius: size * 0.32))
+            .accessibilityHidden(true)
+    }
+}
+
+private struct PressFeedback: ViewModifier {
+    let pressed: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content.scaleEffect(pressed && !reduceMotion ? 0.98 : 1)
+            .opacity(pressed && reduceMotion ? 0.8 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: pressed)
     }
 }

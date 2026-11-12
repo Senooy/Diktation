@@ -6,10 +6,13 @@
 # un profil notarytool enregistré une fois pour toutes :
 #   xcrun notarytool store-credentials "<profil>" --apple-id <email> --team-id <équipe>
 # (le mot de passe d'app se tape à l'invite sécurisée de notarytool).
-# NOTARY_PROFILE choisit le profil (par défaut : diktation-notary).
+# NOTARY_PROFILE choisit le profil, sinon .notary-profile local, sinon diktation-notary.
 set -eu
 cd "$(dirname "$0")"
 PROFILE="${NOTARY_PROFILE:-diktation-notary}"
+if [ -z "${NOTARY_PROFILE:-}" ] && [ -f .notary-profile ]; then
+  PROFILE=$(cat .notary-profile)
+fi
 # Refuse ad-hoc signatures for distributable releases, including inherited overrides.
 [ "${DIKTATION_SIGN_IDENTITY:-}" != "-" ] || { echo "A release requires Developer ID signing." >&2; exit 1; }
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)

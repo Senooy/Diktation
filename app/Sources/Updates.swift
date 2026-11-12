@@ -101,6 +101,14 @@ final class AppUpdates: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         pendingInstall = nil; waitingForSession = false
+        let failure = error as NSError
+        // Sparkle also ends a successful "already up to date" check here.
+        // Deferring a scheduled check during recording is expected, too.
+        if (failure.domain == SUSparkleErrorDomain && failure.code == Int(SUError.noUpdateError.rawValue)) ||
+            (failure.domain == "dev.local.diktation.updates" && failure.code == 1) {
+            self.error = nil
+            return
+        }
         self.error = error.localizedDescription
     }
 

@@ -53,6 +53,10 @@ Un profil existant peut être réutilisé via `NOTARY_PROFILE`. Facultativement,
 dans le trousseau, sous le compte `dev.local.diktation`. Ne pas régénérer cette clé
 pour une mise à jour ordinaire.
 
+Pour mémoriser le nom du profil sur ce Mac, écrire uniquement son nom dans
+`.notary-profile` à la racine du projet. Ce fichier est ignoré par Git et ne contient
+aucun identifiant secret. `NOTARY_PROFILE` reste prioritaire s’il est défini.
+
 Après modification de `Cargo.toml`, mise à jour de `Cargo.lock` et rédaction de
 `docs/releases/<version>.md` :
 

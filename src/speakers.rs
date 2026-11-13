@@ -74,6 +74,7 @@ impl Diarizer {
         self.0.set_config(&config);
         let result = self.0.process(samples).context("speaker analysis failed")?;
         let mut turns = normalize(result.sort_by_start_time(), samples.len() as f32 / SAMPLE_RATE as f32);
+        validate_voice_count(&turns, count)?;
         let prompt = engine::build_prompt(&prefs.dictionary, &prefs.language);
         for turn in &mut turns {
             // No padding across turns: another speaker must not leak into this transcript.
@@ -91,6 +92,16 @@ impl Diarizer {
         }
         Ok(turns)
     }
+}
+
+fn validate_voice_count(turns: &[Turn], requested: usize) -> Result<()> {
+    let voices = turns.iter().map(|t| t.speaker).collect::<std::collections::HashSet<_>>().len();
+    let limit = if requested == 0 { 20 } else { requested };
+    ensure!(voices <= limit, "{}", crate::i18n::tr(
+        "La détection automatique a séparé trop de voix. Choisissez le nombre réel d’intervenants puis relancez la transcription. L’audio et les notes sont conservés.",
+        "Too many voices were detected. Choose the actual speaker count and transcribe again. Audio and notes are preserved."
+    ));
+    Ok(())
 }
 
 fn normalize(segments: Vec<sherpa_onnx::OfflineSpeakerDiarizationSegment>, duration: f32) -> Vec<Turn> {
@@ -132,6 +143,13 @@ mod tests {
     use super::*;
     fn segment(start: f32, end: f32, speaker: i32) -> sherpa_onnx::OfflineSpeakerDiarizationSegment {
         sherpa_onnx::OfflineSpeakerDiarizationSegment { start, end, speaker, confidence: 0.0 }
+    }
+    #[test]
+    fn excessive_voice_counts_require_manual_correction() {
+        let turns = (1..=198).map(|speaker| Turn { start: 0., end: 1., speaker, text: String::new(), overlap: false }).collect::<Vec<_>>();
+        assert!(validate_voice_count(&turns, 0).is_err());
+        assert!(validate_voice_count(&turns[..3], 3).is_ok());
+        assert!(validate_voice_count(&turns[..4], 3).is_err());
     }
     #[test]
     fn labels_are_stable_and_overlaps_are_explicit() {

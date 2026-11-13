@@ -196,7 +196,12 @@ struct MeetingEditor: View {
                 Text(meeting.statusLabel).body(12).foregroundStyle(Ink.indigo)
             } else {
                 Text(meeting.statusLabel).body(12).foregroundStyle(Ink.secondary)
-                Button(tr("Re-transcrire", "Transcribe again")) { core.send("meeting_retry", ["id": meeting.id]) }
+                Picker(tr("Intervenants", "Speakers"), selection: $count) {
+                    Text(tr("Nombre automatique", "Automatic count")).tag(0)
+                    ForEach(1...20, id: \.self) { n in Text(tr("\(n) intervenant(s)", "\(n) speaker(s)")).tag(n) }
+                }.frame(width: 220)
+                    .disabled(core.state.busy)
+                Button(tr("Re-transcrire", "Transcribe again")) { core.send("meeting_retry", ["id": meeting.id, "speakers": count]) }
                     .buttonStyle(QuietButtonStyle()).disabled(core.state.busy || !core.state.engine.ready || !core.state.speakers_ready)
             }
             Spacer(minLength: 0)

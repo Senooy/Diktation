@@ -409,10 +409,15 @@ impl Controller {
                 let engine = engine.context("transcription model not ready")?;
                 let mut prefs = prefs.clone();
                 prefs.language = meeting.language;
-                store.status(id, "processing", "")?;
+                let count = match v.get("speakers") {
+                    None => meeting.speaker_count,
+                    Some(value) => value.as_u64().filter(|n| *n <= 20)
+                        .context("speaker count must be between 0 and 20")? as usize,
+                };
+                store.0.execute("UPDATE meeting SET speaker_count=?2, status='processing', error='' WHERE id=?1", params![id, count as i64])?;
                 self.processing = Some(id);
                 self.error = None;
-                self.spawn_final(id, None, engine, prefs, meeting.speaker_count);
+                self.spawn_final(id, None, engine, prefs, count);
             }
             _ => anyhow::bail!("unknown meeting command"),
         }
@@ -797,6 +802,23 @@ mod tests {
         );
         assert_eq!(m.notes, "Note saisie pendant le traitement");
         assert!(dir.join("audio.wav").is_file());
+        // Retrying an existing meeting must honor and persist the corrected count.
+        c.command(&json!({"cmd":"meeting_retry","id":id,"speakers":1}), Some(engine.clone()), &prefs, true);
+        assert!(c.busy());
+        let started = Instant::now();
+        while c.busy() {
+            assert!(started.elapsed() < Duration::from_secs(90));
+            c.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let repaired = &c.items[0];
+        assert_eq!(repaired.status, "ready", "{}", repaired.error);
+        assert_eq!(repaired.speaker_count, 1);
+        assert_eq!(repaired.turns.iter().map(|t| t.speaker).collect::<std::collections::BTreeSet<_>>().len(), 1);
+        assert_eq!(repaired.notes, "Note saisie pendant le traitement");
+        c.command(&json!({"cmd":"meeting_retry","id":id,"speakers":21}), Some(engine.clone()), &prefs, true);
+        assert!(!c.busy());
+        assert_eq!(c.items[0].speaker_count, 1);
         // Exercise the video-call backend using two timestamped synthetic sources.
         // First voice is the microphone, second voice is Mac audio; no real device is opened.
         c.command(&json!({"cmd":"meeting_create"}), None, &prefs, true);

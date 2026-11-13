@@ -225,16 +225,23 @@ struct MeetingEditor: View {
                  ? tr("Texte provisoire par passages de 5 s. Les intervenants sont identifiés à la fin.", "Provisional text in 5-second passages. Speakers are identified at the end.")
                  : tr("Prises de parole horodatées. Vous pouvez nommer chaque intervenant.", "Timestamped turns. You can name each speaker."))
                 .body(11.5).foregroundStyle(Ink.secondary)
-            if !speakerIDs.isEmpty {
-                ForEach(speakerIDs, id: \.self) { speaker in
-                    HStack {
-                        Circle().fill(speakerColor(speaker)).frame(width: 7, height: 7)
-                        TextField(tr("Intervenant \(speaker)", "Speaker \(speaker)"), text: Binding(
-                            get: { names[String(speaker)] ?? "" },
-                            set: { names[String(speaker)] = $0 }
-                        )).textFieldStyle(.plain).body(12)
+            if speakerIDs.count > 20 {
+                Text(tr("Trop de voix détectées. Choisissez le nombre réel d’intervenants ci-dessus, puis re-transcrivez la réunion.", "Too many voices detected. Choose the actual speaker count above, then transcribe the meeting again."))
+                    .body(12).foregroundStyle(Ink.coral)
+            } else if !speakerIDs.isEmpty {
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach(speakerIDs, id: \.self) { speaker in
+                            HStack {
+                                Circle().fill(speakerColor(speaker)).frame(width: 7, height: 7)
+                                TextField(tr("Intervenant \(speaker)", "Speaker \(speaker)"), text: Binding(
+                                    get: { names[String(speaker)] ?? "" },
+                                    set: { names[String(speaker)] = $0 }
+                                )).textFieldStyle(.plain).body(12)
+                            }
+                        }
                     }
-                }
+                }.frame(height: min(CGFloat(speakerIDs.count) * 26, 130))
             }
             Divider().overlay(Ink.hairline)
             ScrollView {
